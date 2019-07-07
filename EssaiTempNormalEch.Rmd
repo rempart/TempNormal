@@ -1,0 +1,142 @@
+---
+title: "Modèle d'ensembles échangeable pour Températures"
+author: Eric Parent
+date: "4 juillet 2019"
+output: html_notebook
+---
+
+# Données
+```{r}
+rm(list=ls())
+setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
+load("Ain@Vouglans.Rdata")
+library(tidyverse)
+library(tidyselect)
+library(lubridate)
+library(R2jags)
+```
+
+J'ai récupéré les données journalières de températures aux stations suivantes:
+
+- l' Ain à Vouglans, 
+
+- le Buech à Chambons,
+
+- le Drac à Sautet.
+
+Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans) puis de 2O11 à 1015 (5 ans) pour des prévisions jusqu'à une échéance de 9 jours
+
+```{r}
+range(dhisto$Date)
+unique(dtout$Year)
+unique(dtout$Echeance)
+```
+
+# Analyse climatologique
+
+On peut suivre les variations de températures au cours de l'année:
+```{r}
+dhisto %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T, color = an)) + geom_line(alpha=0.5)
+horsain = ymd("2003-10-15")
+```
+
+Ceci met en évidence le comportement possiblement aberrant en date du 2003-10-15, horsain que l'on enlève
+```{r}
+dhisto %>% filter(Date!= horsain) %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T)) + geom_point(aes( color = an),alpha=0.5, shape ='.', show.legend = FALSE)+geom_smooth()+labs(x='Jours Calendaires', y='Températures', title="Climatologie à Vouglans")
+```
+
+On peut alors construire une température moyenne de réference et son écart-type associé, eventuellemnt lissés pour jour calendaire de l'année.
+```{r}
+dhisto %>% filter(Date!= horsain, Calendaire != 366) %>% mutate(an= as_factor(Year)) %>% group_by(Calendaire) %>% summarize (T_moy_ref= mean(T),T_std_ref= var(T)^0.5 ) -> T_ref
+
+modlin<-lm(T_moy_ref~ 1+ sin(2*pi*Calendaire/365)+                        cos(2*pi*Calendaire/365)+
+          sin(4*pi*Calendaire/365) +
+          cos(4*pi*Calendaire/365)+
+          sin(6*pi*Calendaire/365) +
+          cos(6*pi*Calendaire/365)+
+          sin(8*pi*Calendaire/365)+
+          cos(8*pi*Calendaire/365), data=T_ref
+          )
+modlinStd <-lm(log(T_std_ref)~ 1+ sin(2*pi*Calendaire/365)+                        cos(2*pi*Calendaire/365)+
+          sin(4*pi*Calendaire/365) +
+          cos(4*pi*Calendaire/365)+
+          sin(6*pi*Calendaire/365) +
+          cos(6*pi*Calendaire/365)+
+          sin(8*pi*Calendaire/365)+
+          cos(8*pi*Calendaire/365), data=T_ref
+          )
+
+T_ref %>% mutate(T_moy_ref_lis=modlin$fitted.values,
+                 T_std_ref_lis=exp(modlinStd$fitted.values) )-> T_ref
+T_ref%>% 
+  ggplot(aes(x=Calendaire))+geom_line(aes(y=T_moy_ref_lis)) + geom_point(aes(y=T_moy_ref))+labs(caption="Moyenne calendaire (référence climatologique)")
+T_ref %>%  
+  ggplot(aes(x=Calendaire))+geom_line(aes(y=T_std_ref_lis)) +    geom_point(aes(y=T_std_ref))+labs(caption="Ecart-Type calendaire (référence climatologique) ")
+```
+
+
+# Analyse préquentielle
+
+## Analyse descriptive
+
+On va centrer et réduire les températures, grâce à l'analyse précédente.
+Construisons d'abord une base de données eet représentons le lien entre température observée et température moyenne prévue à diverses échéances (après centrage par la moyenne climatologique calendaire et reduction par l'écart-type climatologique calendaire  ) 
+
+```{r}
+dtout %>%  mutate(Xbar=rowMeans(select(.,starts_with("Run"))),
+                  V2=apply(select(.,starts_with("Run")),1,var)) %>%
+  select(-starts_with("Run")) ->d
+ d %>% left_join(T_ref %>% select(-T_std_ref,-T_moy_ref)) ->d
+ d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis,color=as.factor(Month)) )+geom_point()+geom_abline(slope=1,intercept=0) +facet_wrap(~Echeance)+labs(x="anomalie de température", y="anomalie de prévision", color="Mois")
+
+```
+
+On voit que le biais et la dispersion augmentent avec l'échéance, comme on s'y attend.
+```{r}
+d %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% group_by(Echeance) %>% summarise(biais=mean(x-y, na.rm=T), dev=var(x-y, na.rm=T), sce=mean((x-y)^2, na.rm=T))
+```
+Pour une échéance donnée, il y a également des fluctuations selon le mois, mais les différences restent raisonnables. A titre d'exemple, pour une échéance de 4 jours:
+```{r}
+d %>% filter(Echeance ==4) %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% 
+  group_by(Month) %>% summarise(biais=mean(x-y, na.rm=T), dev=var(x-y, na.rm=T),sce=mean((x-y)^2, na.rm=T))
+```
+
+Par contre la variance intermembres ne semble pas liée à la température observée
+```{r}
+d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=log(V2/(T_std_ref_lis^2)),color=as.factor(Month)) )+geom_point()+facet_wrap(~Echeance)+labs(x="anomalie de température", y="Variance relative (enLog)", color="Mois")
+
+```
+
+Comme le montre la figure précédente, sa valeur moyenne (géométrique) augmente avec l'échéance jusqu'à atteindre 42% de la variance climatologique à l'échéance 9 jours, comme on s'y attend, mais pas la dispersion de son logarithme.
+```{r}
+d %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Echeance) %>% summarise(moygeom=exp(mean(y, na.rm=T)), dispersion=var(y, na.rm=T))
+```
+Là encore, le mois ne semble guère influent vis à vis de ces caractéristiques.
+
+```{r}
+d %>% filter(Echeance ==4) %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Month) %>% summarise(moygeom=exp(mean(y, na.rm=T)), dispersion=var(y, na.rm=T))
+```
+
+
+## Etablissement de modèles
+
+```{r}
+d %>%  mutate(x=((Obs-Xbar)/T_std_ref_lis)^2,y=(V2/(T_std_ref_lis^2))) %>% 
+ggplot(aes(x=(x)^0.5,y=(y)^0.5))+geom_point(aes( color=as.factor(Month)))+geom_smooth(se=0, color='black')+geom_abline(intercept=0, slope=1, color='white')+facet_wrap(~Echeance)+labs(x="écart absolu prévision-temperature normalisé", y="std relatif", color="Mois")
+```
+
+
+### Raisonnement conditionnel bayésien
+
+Je veux comparer à un modèle bayésien qui conditionne les valeurs de l'ensemble sur la *température vraie* $\theta$ car c' est l'état de la nature du problème statistique. Je propose :
+$$ \theta \sim N(0,1) \\
+ \bar{X}\vert (V^2,\theta) \sim N(a\times \theta +b , c+ d\times V^2) \\ log(V^2) \sim N(g,s^2)
+ $$
+ 
+ L'inférence des coefficients $a,b,c,d,g,s^2$) sera menée sur un échantillon d'apprentissage.
+ 
+ La loi prédictive (c-à-d conditionnelle sachant les résumés de l'ensemble $\bar{X}$ et $V^2$) est ici "immédiate", par conjugaison normale:
+ 
+ $$\theta \vert (\bar{X},V^2,a,b,c,d) \sim N(\frac {\bar{X}-b}{a}, \frac{1}{1+\frac{a^2}{c+ d\times V^2}})$$
+
+Ses performances seront analysées sur un échantillon de validation.
