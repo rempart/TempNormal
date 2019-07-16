@@ -2,7 +2,7 @@
 title: "Modèle d'ensembles échangeable"
 subtitle: " Un Exemple de Températures pour l'approche normale"
 author: Eric Parent
-date: "14 juillet 2019"
+date: "16 juillet 2019"
 output: 
   html_notebook:
     toc: yes
@@ -12,25 +12,30 @@ output:
 # Introduction
 
 Jacques et moi avons beaucoup communiqué sur les modèles d'ensemble échangeables, mais absolument rien valorisé en terme d'article vis à vis de la communauté d'hydrologie statistique que nous nous plaisons tant à critiquer. 
-D'autre part nos accords (et/ou désaccords) théoriques sur l'intérêt du caractère échangeable pour modéliser les ensembles et du Bayesian Forecasting System de Krzysztofowicz pour construire une prédictive resteront du domaine des plaisantes joutes epistolaires limitées à deux crocodiles bayésiens si nous ne montrons pas leur caractère opératoire sur de "vraies" jeux de données pour lesquels on mettra en évidence les améliorations concrètes et pratiques que ces méthodes apportent (au delà de leur caractère théorique rationel et cohérent).
-C'est l'objectif de ce papier, écrit en Markdown html notebook pour donner une illustration informatique et applicative *en même temps* que du texte plus théorique.
-J'imagine en fait deux papiers de ce type, le premier ici sur le modèle normal échangeable inspiré du modèle à deux pivots (voir pour le jus théorique le texte de Jacques *ENSEMBLESAISON.tex*) que l'on peut illustrer sur des données de températures d'EDF-DTG,  le second, à venir, sur des données zéros-inflatées de précipitations, où l'on mettrait en oeuvre les modèles Bernoulli-Gamma et lois des fuites. Ces papiers pourront servir de base à des articles publiables à moyen terme.
+D'autre part, nos accords (ainsi que désaccords) théoriques sur l'intérêt du caractère échangeable pour modéliser les ensembles et du Bayesian Forecasting System de Krzysztofowicz afin de construire une prédictive resteront du domaine des plaisantes joutes epistolaires limitées à deux crocodiles bayésiens si nous ne montrons pas leur caractère opératoire sur de "vraies" jeux de données. Je propose donc de traiter de tels jeux de données pour lesquels on mettra en évidence les améliorations concrètes et pratiques que ces méthodes apportent (au delà de leur caractère théorique rationel et cohérent).
+C'est l'objectif de ce papier, écrit en *Markdown html notebook* dans l'intention de donner une illustration informatique et applicative *en même temps* que du texte plus théorique.
+J'imagine en fait deux papiers de ce type:
+
+* le premier ici sur le modèle normal échangeable inspiré du modèle à deux pivots (voir pour le *jus théorique* le texte de Jacques *ENSEMBLESAISON.tex*) que l'on peut illustrer sur des données de températures d'EDF-DTG,  
+
+* le second, à venir, sur des données zéros-inflatées de précipitations, où l'on mettrait en oeuvre les modèles Bernoulli-Gamma et lois des fuites. Ces papiers pourront servir de base à des articles publiables à terme... que j'espère pas très lointain.
 
 # Analyses Descriptives
 
 ## Les données disponibles
 ```{r}
 rm(list=ls())
-setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
+# setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
 load("Ain@Vouglans.Rdata")
 library(tidyverse)
 library(tidyselect)
 library(lubridate)
 library(R2jags)
 library(verification)
+library(GGally)
 ```
 
-J'ai récupéré les données journalières de températures fournies par EDF-DTG aux stations suivantes:
+Suite à la thèse de Marie Courbariaux, je dispose des données journalières de températures fournies par EDF-DTG aux stations suivantes:
 
 - l' Ain à Vouglans, 
 
@@ -38,29 +43,32 @@ J'ai récupéré les données journalières de températures fournies par EDF-DT
 
 - le Drac à Sautet.
 
-On travaille dans toute la suite sur l'Ain à Vouglans, mais les programmes développés sont directement transposables aux deux autres stations. Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans) puis de 2O11 à 1015 (5 ans) pour des prévisions jusqu'à une échéance de 9 jours dans le *data.frame dtout*.
+Je propose de travailler dans toute la suite sur l'Ain à Vouglans, mais les programmes développés sont directement transposables aux deux autres stations. Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans) puis de 2O11 à 1015 (5 ans) pour des prévisions jusqu'à une échéance de 9 jours dans le *data.frame dtout*.
+
 
 ```{r}
+dhisto %>% glimpse
 range(dhisto$Date)
+dtout %>% head()
 unique(dtout$Year)
 unique(dtout$Echeance)
 ```
 
 ## Analyse climatologique
 
-On peut suivre les variations de températures au cours de l'année:
+On peut illustrer les fluctuations saisonnières des températures journalières au cours de l'année:
 
 ```{r}
 dhisto %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T, color = an)) + geom_line(alpha=0.5)
 horsain = ymd("2003-10-15")
 ```
 
-Ceci met en évidence le comportement possiblement aberrant en date du 2003-10-15, horsain que l'on enlève
+Ceci met en évidence un comportement très sûrement aberrant en date du 2003-10-15, horsain que l'on enlève
 ```{r}
 dhisto %>% filter(Date!= horsain) %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T)) + geom_point(aes( color = an),alpha=0.5, shape ='.', show.legend = FALSE)+geom_smooth()+labs(x='Jours Calendaires', y='Températures', title="Climatologie à Vouglans")
 ```
 
-On va alors construire une température moyenne de réference et son écart-type associé, eventuellemnt lissés pour jour calendaire de l'année.
+On va alors construire une température moyenne de réference et son écart-type associé, éventuellement lissés pour chaque jour calendaire de l'année. Pour construire ces estimateurs périodiques, on *régresse* sure une base des 4 premières harmoniques la température interannuelle moyenne et le logarithme de l'écart-type journalier de la température. 
 
 ```{r}
 dhisto %>% filter(Date!= horsain, Calendaire != 366) %>% mutate(an= as_factor(Year)) %>% group_by(Calendaire) %>% summarize (T_moy_ref= mean(T),T_std_ref= var(T)^0.5 ) -> T_ref
@@ -93,26 +101,31 @@ T_ref %>%
 
 ## Analyse descriptive de l'ensemble du centre européen de prévision
 
-### Relation entre moyenne de l'ensemble et température observée
-
-L'analyse climatologique précédente permet de centrer et réduire les températures.
-Elles sont alors considérées comme gaussiennes. On va laisser tomber les membres individuels pour en conserver les statistiques exhaustives, moyenne et variance empiriques dans le dataframe de travail *d*.
-Construisons d'abord une base de données (en ajoutant la climatologie) et représentons le lien entre température observée et température moyenne prévue à diverses échéances (après centrage par la moyenne climatologique calendaire et réduction par l'écart-type climatologique calendaire  ) 
-
+L'analyse climatologique précédente permet de centrer et réduire les températures pour travailler en *anomalies* journalières.
+Ces anomalies sans dimension sont alors considérées comme gaussiennes, marginalement $N(0,1)$. On va laisser tomber les membres individuels pour en conserver les statistiques exhaustives, moyenne et variance empiriques dans le dataframe de travail *d*.
+Construisons d'abord une base de données (en ajoutant la climatologie).
 ```{r}
 dtout %>%  mutate(Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
                   V2=apply(dplyr::select(.,starts_with("Run")),1,var)) %>%
   dplyr::select(-starts_with("Run")) ->d
+```
+
+
+### Relation entre moyenne de l'ensemble et température observée
+
+ Représentons en premier lieu le lien entre température observée et température moyenne prévue à diverses échéances (après centrage par la moyenne climatologique calendaire et réduction par l'écart-type climatologique calendaire  ) 
+
+```{r}
  d %>% left_join(T_ref %>% dplyr::select(-T_std_ref,-T_moy_ref)) ->d
  d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis,color=as.factor(Month)) )+geom_point()+geom_abline(slope=1,intercept=0) +facet_wrap(~Echeance)+labs(x="Anomalie de température", y="Anomalie de prévision", color="Mois")
 
 ```
 
-Pour la moyenne d'ensemble, on constate que le biais et la dispersion augmentent avec l'échéance, comme on s'y attend.
+Pour la moyenne d'ensemble, on constate que le biais et la dispersion vis à vis de la cible augmentent avec l'échéance, comme on s'y attend.
 ```{r}
-d %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% group_by(Echeance) %>% summarise(biais=mean(x-y, na.rm=T), dev=var(x-y, na.rm=T), sce=mean((x-y)^2, na.rm=T))
+d %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% group_by(Echeance) %>% summarise(biais=mean(x-y, na.rm=T), variance=var(x-y, na.rm=T), sce=mean((x-y)^2, na.rm=T))
 ```
-Pour une échéance donnée, il y a également des fluctuations selon le mois, mais ces différences restent relativement raisonnables. A titre d'exemple, pour une échéance de 4 jours:
+Pour une échéance donnée, il y a également des fluctuations selon le mois considéré, mais ces différences restent relativement raisonnables. A titre d'exemple, faisons le calcul pour une échéance de 4 jours:
 ```{r}
 d %>% filter(Echeance ==4) %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% 
   group_by(Month) %>% summarise(biais=mean(x-y, na.rm=T), variance=var(x-y, na.rm=T),sce=mean((x-y)^2, na.rm=T))
@@ -126,11 +139,13 @@ d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=log(V2/(T_std_ref_lis^2))
 
 ```
 
-Comme le montre la figure précédente, la valeur moyenne (géométrique) de la variance inter-membre augmente avec l'échéance jusqu'à atteindre 42% de la variance climatologique à l'échéance 9 jours, comme on s'y attend, mais pas la dispersion de son logarithme.
+Comme le montre la figure précédente, la valeur moyenne (géométrique) de la variance inter-membre augmente avec l'échéance jusqu'à atteindre 42% de la variance climatologique à l'échéance 9 jours, comme on s'y attend, mais pas la dispersion de son logarithme, qui, au contraire, diminue .
+
 ```{r}
 d %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Echeance) %>% summarise(moygeomvariance=exp(mean(y, na.rm=T)), VarLogVariance=var(y, na.rm=T))
 ```
-Là encore, le mois ne semble guère influent vis à vis de ces caractéristiques, voir par exemple le tableau pour l'échéance à quatre jours.
+
+Là encore, le mois de l'année ne semble guère influent vis à vis de ces caractéristiques, voir par exemple le tableau pour l'échéance à quatre jours.
 
 ```{r}
 d %>% filter(Echeance ==4) %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Month) %>% summarise(moygeomvariance=exp(mean(y, na.rm=T)), VarLogVariance=var(y, na.rm=T))
@@ -139,30 +154,45 @@ d %>% filter(Echeance ==4) %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(
 
 ### Relation entre variance de l'ensemble et écart de la température observée à la moyenne d'ensemble
 
-On observe enfin un lien de l'écart entre observation et moyenne d'ensemble à la variabilité inter-membre. La figure ci-après illustre cette liaison (dans l'échelle des écart-types relatifs). De façon surprenante, la pente est proche de $1$. 
+On observe enfin un lien de l'écart entre observation et moyenne d'ensemble à la variabilité inter-membre. La figure ci-après illustre cette liaison (dans l'échelle des écart-types relatifs). Je reste pour le moment sans explication en ce qui concerne la valeur de la pente, proche de $1$. 
 
 ```{r}
 d %>%  mutate(x=(V2/(T_std_ref_lis^2)),y=((Obs-Xbar)/T_std_ref_lis)^2) %>% 
 ggplot(aes(x=(x)^0.5,y=(y)^0.5))+geom_point(aes( color=as.factor(Month)))+geom_smooth(se=0, color='black')+geom_abline(intercept=0, slope=1, color='white')+facet_wrap(~Echeance)+labs(y="écart absolu prévision-temperature normalisé", x="std relatif", color="Mois")
 ```
-On souhaite se servir de ce lien, même s'ils'avère plutôt flou, pour construire un modèle reliant les statistiques résumées $\bar{X}, V^2$ de l'ensemble et l'observation $\theta$.
+On souhaite se servir de ce lien, même s'il s'avère assez flou, pour construire un modèle de prévision probabiliste reliant les statistiques résumées $\bar{X}_t, V_t^2$ de l'ensemble et l'observation cible $\theta_t$.
 
 # Le challenge
+
+## Objectifs
 
 L'objectif de ce travail est:
 
   * d'utiliser la méthode cohérente du BFS pour construire une prévision probabiliste à partir du modèle échangeable normal à deux pivots,
 
-  * de montrer ses performances sur les données de températures de Vouglans, à diverses échéances. La figure ci-après annonce l'objectif à battre en terme de CRPS par rapport à la méthode d'ensemble du CEP.
+  * de montrer ses performances sur les données de températures de Vouglans, à diverses échéances. 
+  
+  * de comparer ses performances à celles des méthodes courantes EMOS et BMA, par exemple.
+  
+  * de montrer comment intégrer dans le même schéma les informations issues d'autres systèmes d'ensembles.
+  
+## Les performances à battre
+
+  La figure ci-après annonce l'objectif à battre en terme de CRPS par rapport à la méthode d'ensemble du CEP.
   
 
 ```{r}
+label<-data.frame(
+  Echeance=c(8,5),
+  CRPS= c(2.05,1.1),
+  label=c("Climatologie","CEP")
+)
 d %>% filter(Year>2011) %>% group_by(Echeance) %>% mutate(crps_ens=crps(obs=Obs,pred = data.frame(Xbar,V2^0.5, na.rm=T))$crps,
                                     crps_clim=crps(obs=Obs,pred = data.frame(T_moy_ref_lis,T_std_ref_lis, na.rm=T))$crps) %>% summarize(CRPS_ens=mean(crps_ens,na.rm=T),CRPS_clim=mean(crps_clim,na.rm=T)) %>% 
-  ggplot(aes(x=Echeance))+geom_line(aes(y=CRPS_clim),color='red')+geom_line(aes(y=CRPS_ens))+geom_point(aes(y=CRPS_clim),color='red')+geom_point(aes(y=CRPS_ens))+labs(y="CRPS")
+  ggplot(aes(x=Echeance))+geom_line(aes(y=CRPS_clim),color='red')+geom_line(aes(y=CRPS_ens))+geom_point(aes(y=CRPS_clim),color='red')+geom_point(aes(y=CRPS_ens))+labs(y="CRPS")+geom_label(data=label,aes(y=CRPS, label=label))
 ```
 
-On peut également chercher à vérifier le caractère uniforme de leur *probability integral transforms*.
+On cherchera également à vérifier la calibration, par exemple en testant le caractère uniforme de leur *probability integral transforms*.
 ```{r}
 d %>% filter(Year>2011) %>%  mutate(pit_ens=crps(obs=Obs,pred = data.frame(Xbar,V2^0.5, na.rm=T))$pit,
                                     pit_clim=crps(obs=Obs,pred = data.frame(T_moy_ref_lis,T_std_ref_lis, na.rm=T))$pit) %>%
@@ -170,8 +200,9 @@ d %>% filter(Year>2011) %>%  mutate(pit_ens=crps(obs=Obs,pred = data.frame(Xbar,
   geom_histogram(mapping=aes(x=pit_ens),stat="density",position = "dodge", color="blue", alpha=0.3)+geom_hline(yintercept = 1)+facet_wrap(~Echeance)+labs(x="Probability Integral Transform")
 ```
 
+## Diviser l'échantillon en apprentissage+validation
 
-Pour tester la performance des divers modèles, on réalisera l'inférence sur un échantillon d'apprentissage (par exemple 2005-2008) et on validera sur l'échantillon restant (par exemple 2011-2015)
+Pour tester la performance des diverses méthodes, on réalisera l'inférence sur un échantillon d'apprentissage (par exemple 2005-2008) et on validera sur l'échantillon restant (par exemple 2011-2015)
 
 ```{r}
 d %>% filter(Year < 2010, !is.na(Calendaire)) %>% 
@@ -282,6 +313,11 @@ L'intercept $\alpha$ est possiblement nul, la pente $\beta$ restant inférieure 
 La connaissance a posteriori de $g$ est assez incertaine; $\lambda^2$ et $g$ sont fortement corrélés.
 
 ```{r}
+ggpairs(data = alphabetalambda2g)
+
+```
+
+```{r}
 knitr::kable(rbind(mean=apply(X = alphabetalambda2g,2,mean),std=apply(X = alphabetalambda2g,2,var)^0.5,apply(X = alphabetalambda2g,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
 knitr::kable(cor(alphabetalambda2g),dig=3)
 ```
@@ -343,6 +379,7 @@ Je veux comparer à un modèle bayésien qui conditionne les valeurs de l'ensemb
 $$ \theta \sim N(0,1) \\
  \bar{X}\vert (V^2,\theta) \sim N(a\times \theta +b , c+ d\times V^2) \\ log(V^2) \sim N(g,s^2)
  $$
+
  
  L'inférence des coefficients $a,b,c,d,g,s^2$) sera menée sur un échantillon d'apprentissage.
  
@@ -440,17 +477,3 @@ moyPRED=apply(YPRED, 1, mean)
 stdPRED=apply(YPRED, 1, sd)
 rm(YPRED)
 ```
-
-
-$$\begin{gathered}
-  {X_{ts}} = \alpha  + \beta {Z_{1t}} + \lambda \sigma {Z_{2t}}^{ - O.5}{\varepsilon _{ts}} \hfill \\
-  L{L_t} \propto  - {Z_{2t}}\frac{{\sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}}  + S{{({{\bar X}_t} - \alpha  - \beta {Z_{1t}})}^2}}}{{2{\lambda ^2}{\sigma ^2}}} + \frac{S}{2}\log ({Z_{2t}}) \hfill \\
-  {{\bar X}_t} \sim N\left( {\alpha  + \beta {Z_{1t}},{\raise0.7ex\hbox{$1$} \!\mathord{\left/
- {\vphantom {1 {\left( {\frac{{S{Z_{2t}}}}{{{\lambda ^2}{\sigma ^2}}}} \right)}}}\right.\kern-\nulldelimiterspace}
-\!\lower0.7ex\hbox{${\left( {\frac{{S{Z_{2t}}}}{{{\lambda ^2}{\sigma ^2}}}} \right)}$}}} \right) \hfill \\
-  \sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}}  = \frac{{S - 1}}{S}{V^2} \sim Gamma(a = 1,b = \frac{{{Z_{2t}}}}{{2{\lambda ^2}{\sigma ^2}}}) \hfill \\ 
-\end{gathered}$$
-
-
-
-
