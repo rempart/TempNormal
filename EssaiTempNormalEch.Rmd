@@ -1,11 +1,24 @@
 ---
-title: "Modèle d'ensembles échangeable pour Températures"
+title: "Modèle d'ensembles échangeable"
+subtitle: " Un Exemple de Températures pour l'approche normale"
 author: Eric Parent
-date: "4 juillet 2019"
-output: html_notebook
+date: "14 juillet 2019"
+output: 
+  html_notebook:
+    toc: yes
+    toc_depth: 2
+    number_sections: yes
 ---
+# Introduction
 
-# Données
+Jacques et moi avons beaucoup communiqué sur les modèles d'ensemble échangeables, mais absolument rien valorisé en terme d'article vis à vis de la communauté d'hydrologie statistique que nous nous plaisons tant à critiquer. 
+D'autre part nos accords (et/ou désaccords) théoriques sur l'intérêt du caractère échangeable pour modéliser les ensembles et du Bayesian Forecasting System de Krzysztofowicz pour construire une prédictive resteront du domaine des plaisantes joutes epistolaires limitées à deux crocodiles bayésiens si nous ne montrons pas leur caractère opératoire sur de "vraies" jeux de données pour lesquels on mettra en évidence les améliorations concrètes et pratiques que ces méthodes apportent (au delà de leur caractère théorique rationel et cohérent).
+C'est l'objectif de ce papier, écrit en Markdown html notebook pour donner une illustration informatique et applicative *en même temps* que du texte plus théorique.
+J'imagine en fait deux papiers de ce type, le premier ici sur le modèle normal échangeable inspiré du modèle à deux pivots (voir pour le jus théorique le texte de Jacques *ENSEMBLESAISON.tex*) que l'on peut illustrer sur des données de températures d'EDF-DTG,  le second, à venir, sur des données zéros-inflatées de précipitations, où l'on mettrait en oeuvre les modèles Bernoulli-Gamma et lois des fuites. Ces papiers pourront servir de base à des articles publiables à moyen terme.
+
+# Analyses Descriptives
+
+## Les données disponibles
 ```{r}
 rm(list=ls())
 setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
@@ -14,9 +27,10 @@ library(tidyverse)
 library(tidyselect)
 library(lubridate)
 library(R2jags)
+library(verification)
 ```
 
-J'ai récupéré les données journalières de températures aux stations suivantes:
+J'ai récupéré les données journalières de températures fournies par EDF-DTG aux stations suivantes:
 
 - l' Ain à Vouglans, 
 
@@ -24,7 +38,7 @@ J'ai récupéré les données journalières de températures aux stations suivan
 
 - le Drac à Sautet.
 
-Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans) puis de 2O11 à 1015 (5 ans) pour des prévisions jusqu'à une échéance de 9 jours
+On travaille dans toute la suite sur l'Ain à Vouglans, mais les programmes développés sont directement transposables aux deux autres stations. Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans) puis de 2O11 à 1015 (5 ans) pour des prévisions jusqu'à une échéance de 9 jours dans le *data.frame dtout*.
 
 ```{r}
 range(dhisto$Date)
@@ -32,9 +46,10 @@ unique(dtout$Year)
 unique(dtout$Echeance)
 ```
 
-# Analyse climatologique
+## Analyse climatologique
 
 On peut suivre les variations de températures au cours de l'année:
+
 ```{r}
 dhisto %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T, color = an)) + geom_line(alpha=0.5)
 horsain = ymd("2003-10-15")
@@ -45,7 +60,8 @@ Ceci met en évidence le comportement possiblement aberrant en date du 2003-10-1
 dhisto %>% filter(Date!= horsain) %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T)) + geom_point(aes( color = an),alpha=0.5, shape ='.', show.legend = FALSE)+geom_smooth()+labs(x='Jours Calendaires', y='Températures', title="Climatologie à Vouglans")
 ```
 
-On peut alors construire une température moyenne de réference et son écart-type associé, eventuellemnt lissés pour jour calendaire de l'année.
+On va alors construire une température moyenne de réference et son écart-type associé, eventuellemnt lissés pour jour calendaire de l'année.
+
 ```{r}
 dhisto %>% filter(Date!= horsain, Calendaire != 366) %>% mutate(an= as_factor(Year)) %>% group_by(Calendaire) %>% summarize (T_moy_ref= mean(T),T_std_ref= var(T)^0.5 ) -> T_ref
 
@@ -75,60 +91,255 @@ T_ref %>%
 ```
 
 
-# Analyse préquentielle
+## Analyse descriptive de l'ensemble du centre européen de prévision
 
-## Analyse descriptive
+### Relation entre moyenne de l'ensemble et température observée
 
-On va centrer et réduire les températures, grâce à l'analyse précédente.
-Construisons d'abord une base de données eet représentons le lien entre température observée et température moyenne prévue à diverses échéances (après centrage par la moyenne climatologique calendaire et reduction par l'écart-type climatologique calendaire  ) 
+L'analyse climatologique précédente permet de centrer et réduire les températures.
+Elles sont alors considérées comme gaussiennes. On va laisser tomber les membres individuels pour en conserver les statistiques exhaustives, moyenne et variance empiriques dans le dataframe de travail *d*.
+Construisons d'abord une base de données (en ajoutant la climatologie) et représentons le lien entre température observée et température moyenne prévue à diverses échéances (après centrage par la moyenne climatologique calendaire et réduction par l'écart-type climatologique calendaire  ) 
 
 ```{r}
-dtout %>%  mutate(Xbar=rowMeans(select(.,starts_with("Run"))),
-                  V2=apply(select(.,starts_with("Run")),1,var)) %>%
-  select(-starts_with("Run")) ->d
- d %>% left_join(T_ref %>% select(-T_std_ref,-T_moy_ref)) ->d
- d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis,color=as.factor(Month)) )+geom_point()+geom_abline(slope=1,intercept=0) +facet_wrap(~Echeance)+labs(x="anomalie de température", y="anomalie de prévision", color="Mois")
+dtout %>%  mutate(Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
+                  V2=apply(dplyr::select(.,starts_with("Run")),1,var)) %>%
+  dplyr::select(-starts_with("Run")) ->d
+ d %>% left_join(T_ref %>% dplyr::select(-T_std_ref,-T_moy_ref)) ->d
+ d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis,color=as.factor(Month)) )+geom_point()+geom_abline(slope=1,intercept=0) +facet_wrap(~Echeance)+labs(x="Anomalie de température", y="Anomalie de prévision", color="Mois")
 
 ```
 
-On voit que le biais et la dispersion augmentent avec l'échéance, comme on s'y attend.
+Pour la moyenne d'ensemble, on constate que le biais et la dispersion augmentent avec l'échéance, comme on s'y attend.
 ```{r}
 d %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% group_by(Echeance) %>% summarise(biais=mean(x-y, na.rm=T), dev=var(x-y, na.rm=T), sce=mean((x-y)^2, na.rm=T))
 ```
-Pour une échéance donnée, il y a également des fluctuations selon le mois, mais les différences restent raisonnables. A titre d'exemple, pour une échéance de 4 jours:
+Pour une échéance donnée, il y a également des fluctuations selon le mois, mais ces différences restent relativement raisonnables. A titre d'exemple, pour une échéance de 4 jours:
 ```{r}
 d %>% filter(Echeance ==4) %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% 
-  group_by(Month) %>% summarise(biais=mean(x-y, na.rm=T), dev=var(x-y, na.rm=T),sce=mean((x-y)^2, na.rm=T))
+  group_by(Month) %>% summarise(biais=mean(x-y, na.rm=T), variance=var(x-y, na.rm=T),sce=mean((x-y)^2, na.rm=T))
 ```
 
-Par contre la variance intermembres ne semble pas liée à la température observée
+### Relation entre variance de l'ensemble et température observée
+
+Par contre, la variance inter-membre ne semble guère reliée à la température observée
 ```{r}
 d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=log(V2/(T_std_ref_lis^2)),color=as.factor(Month)) )+geom_point()+facet_wrap(~Echeance)+labs(x="anomalie de température", y="Variance relative (enLog)", color="Mois")
 
 ```
 
-Comme le montre la figure précédente, sa valeur moyenne (géométrique) augmente avec l'échéance jusqu'à atteindre 42% de la variance climatologique à l'échéance 9 jours, comme on s'y attend, mais pas la dispersion de son logarithme.
+Comme le montre la figure précédente, la valeur moyenne (géométrique) de la variance inter-membre augmente avec l'échéance jusqu'à atteindre 42% de la variance climatologique à l'échéance 9 jours, comme on s'y attend, mais pas la dispersion de son logarithme.
 ```{r}
-d %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Echeance) %>% summarise(moygeom=exp(mean(y, na.rm=T)), dispersion=var(y, na.rm=T))
+d %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Echeance) %>% summarise(moygeomvariance=exp(mean(y, na.rm=T)), VarLogVariance=var(y, na.rm=T))
 ```
-Là encore, le mois ne semble guère influent vis à vis de ces caractéristiques.
+Là encore, le mois ne semble guère influent vis à vis de ces caractéristiques, voir par exemple le tableau pour l'échéance à quatre jours.
 
 ```{r}
-d %>% filter(Echeance ==4) %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Month) %>% summarise(moygeom=exp(mean(y, na.rm=T)), dispersion=var(y, na.rm=T))
-```
-
-
-## Etablissement de modèles
-
-```{r}
-d %>%  mutate(x=((Obs-Xbar)/T_std_ref_lis)^2,y=(V2/(T_std_ref_lis^2))) %>% 
-ggplot(aes(x=(x)^0.5,y=(y)^0.5))+geom_point(aes( color=as.factor(Month)))+geom_smooth(se=0, color='black')+geom_abline(intercept=0, slope=1, color='white')+facet_wrap(~Echeance)+labs(x="écart absolu prévision-temperature normalisé", y="std relatif", color="Mois")
+d %>% filter(Echeance ==4) %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Month) %>% summarise(moygeomvariance=exp(mean(y, na.rm=T)), VarLogVariance=var(y, na.rm=T))
 ```
 
 
-### Raisonnement conditionnel bayésien
+### Relation entre variance de l'ensemble et écart de la température observée à la moyenne d'ensemble
 
-Je veux comparer à un modèle bayésien qui conditionne les valeurs de l'ensemble sur la *température vraie* $\theta$ car c' est l'état de la nature du problème statistique. Je propose :
+On observe enfin un lien de l'écart entre observation et moyenne d'ensemble à la variabilité inter-membre. La figure ci-après illustre cette liaison (dans l'échelle des écart-types relatifs). De façon surprenante, la pente est proche de $1$. 
+
+```{r}
+d %>%  mutate(x=(V2/(T_std_ref_lis^2)),y=((Obs-Xbar)/T_std_ref_lis)^2) %>% 
+ggplot(aes(x=(x)^0.5,y=(y)^0.5))+geom_point(aes( color=as.factor(Month)))+geom_smooth(se=0, color='black')+geom_abline(intercept=0, slope=1, color='white')+facet_wrap(~Echeance)+labs(y="écart absolu prévision-temperature normalisé", x="std relatif", color="Mois")
+```
+On souhaite se servir de ce lien, même s'ils'avère plutôt flou, pour construire un modèle reliant les statistiques résumées $\bar{X}, V^2$ de l'ensemble et l'observation $\theta$.
+
+# Le challenge
+
+L'objectif de ce travail est:
+
+  * d'utiliser la méthode cohérente du BFS pour construire une prévision probabiliste à partir du modèle échangeable normal à deux pivots,
+
+  * de montrer ses performances sur les données de températures de Vouglans, à diverses échéances. La figure ci-après annonce l'objectif à battre en terme de CRPS par rapport à la méthode d'ensemble du CEP.
+  
+
+```{r}
+d %>% filter(Year>2011) %>% group_by(Echeance) %>% mutate(crps_ens=crps(obs=Obs,pred = data.frame(Xbar,V2^0.5, na.rm=T))$crps,
+                                    crps_clim=crps(obs=Obs,pred = data.frame(T_moy_ref_lis,T_std_ref_lis, na.rm=T))$crps) %>% summarize(CRPS_ens=mean(crps_ens,na.rm=T),CRPS_clim=mean(crps_clim,na.rm=T)) %>% 
+  ggplot(aes(x=Echeance))+geom_line(aes(y=CRPS_clim),color='red')+geom_line(aes(y=CRPS_ens))+geom_point(aes(y=CRPS_clim),color='red')+geom_point(aes(y=CRPS_ens))+labs(y="CRPS")
+```
+
+On peut également chercher à vérifier le caractère uniforme de leur *probability integral transforms*.
+```{r}
+d %>% filter(Year>2011) %>%  mutate(pit_ens=crps(obs=Obs,pred = data.frame(Xbar,V2^0.5, na.rm=T))$pit,
+                                    pit_clim=crps(obs=Obs,pred = data.frame(T_moy_ref_lis,T_std_ref_lis, na.rm=T))$pit) %>%
+  ggplot()+geom_histogram(mapping=aes(x=pit_clim),stat="density", color='red')+
+  geom_histogram(mapping=aes(x=pit_ens),stat="density",position = "dodge", color="blue", alpha=0.3)+geom_hline(yintercept = 1)+facet_wrap(~Echeance)+labs(x="Probability Integral Transform")
+```
+
+
+Pour tester la performance des divers modèles, on réalisera l'inférence sur un échantillon d'apprentissage (par exemple 2005-2008) et on validera sur l'échantillon restant (par exemple 2011-2015)
+
+```{r}
+d %>% filter(Year < 2010, !is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+   filter(!is.na(theta),
+          !is.na(xbar),
+          !is.na(v2)) -> 
+  learning_sample
+d %>% filter(Year > 2010 ,!is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+ filter(!is.na(theta),
+       !is.na(xbar),
+       !is.na(v2)) -> 
+  validation_sample
+```
+
+
+# Modèles d'ensemble
+
+## Analyse préquentielle du modèle à deux pivots
+
+Rappelons la suggestion de Jacques dans son document *EnsembleSaison.*
+Les membres s'appuient sur deux pivots latents $Z_{1t}$ et $Z_{2t}$, de telle sorte que le modèle échangeable s'écrit:
+
+$${X_{ts}} = \alpha  + \beta {Z_{1t}} + \lambda \sigma {Z_{2t}}^{ - O.5}{\varepsilon _{ts}}$$
+
+où $\varepsilon _{ts}\sim N(0,1)$ tandis que $\sigma$ peut être pris égal à $1$.
+Les pivots latents sont munis de priors
+$$\begin{gathered}
+  {Z_{2,t}} \sim Gamma(g,1) \hfill \\
+  {Z_{1t}}|{Z_{2t}} \sim N(0,{\sigma ^2}{Z_{2t}}^{ - 1}) \hfill \\ 
+\end{gathered}$$
+
+
+Travaillant avec les statistiques exhausives, on écrira
+$$\begin{gathered}
+  {{\bar X}_t} \sim N(\alpha  + \beta {Z_{1t}},\frac{{{\lambda ^2}{\sigma ^2}}}{{S{Z_{2t}}}}) \hfill \\
+  \sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}}  \sim \frac{{{\lambda ^2}{\sigma ^2}}}{{{Z_{2t}}}}{\chi ^2}(S - 1) \hfill \\ 
+\end{gathered}$$
+
+
+
+Soit encore, en posant $V_{t}^{2}=\frac{{\sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}} }}{{S - 1}}$, le modèle d'échantillonnage à $t$, par orthogonalité des deux statistiques exhaustives moyenne et variances empiriques, se résume par les deux équations:
+$$\begin{gathered}
+  {{\bar X}_t} \sim N(\alpha  + \beta {Z_{1t}},\frac{{{\lambda ^2}{\sigma ^2}}}{{S{Z_{2t}}}}) \hfill \\
+  {V_{t}^{2}} \sim Gamma\left( {\frac{{S - 1}}{2},\frac{{{Z_{2t}}(S - 1)}}{{2{\lambda ^2}{\sigma ^2}}}} \right) \hfill \\ 
+\end{gathered}$$
+
+L'inférence des coefficients $\alpha ,\beta ,\lambda , g$ sera menée sur l' échantillon d'apprentissage.
+Prenons par exemple l'écheance à 4 jours des années 2005-2008.
+
+```{r}
+learning_sample  %>% filter( Echeance == 4) %>%
+                   dplyr::select(theta,xbar,v2) -> apprentissage
+```
+
+On procède à l'estimation bayésienne de $\alpha ,\beta ,\lambda , g$ grâce au logiciel d'inférence bayésienne *Jags*.
+
+```{r}
+model_string <- "
+model{
+a<-(S-1)/2
+for (t in 1:N){
+m[t] <- alpha+beta*Z1[t]
+preci[t]<- Z2[t]/(lambda2)
+xbar[t] ~ dnorm(m[t], preci[t])
+b[t]<-preci[t]*a
+v2[t] ~ dgamma(a,b[t])
+# latentes
+Z2[t] ~ dgamma(g,1)
+Z1[t] ~ dnorm(0, 1)
+}
+alpha ~ dunif(-10,10)
+beta ~ dunif(0,10)
+lambda2 ~ dunif(0,10)
+g ~ dunif(0.5,10)
+}
+"
+params=c("alpha","beta","lambda2","g")
+data <- list(xbar=apprentissage$xbar,
+             v2=apprentissage$v2,
+             N=length(apprentissage$xbar),
+             S=50)
+temp<-jags(data = data, model.file = textConnection(model_string),
+           parameters.to.save = params,n.chains = 3,
+           n.burnin = 500,n.iter = 1000)
+```
+
+
+```{r}
+temp$BUGSoutput$sims.matrix %>% 
+  as.data.frame() %>% 
+  dplyr::select(alpha,beta,lambda2,g) ->alphabetalambda2g
+  alphabetalambda2g %>% 
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5) +
+  facet_grid(param~.,scales = "free") 
+
+```
+
+
+L'intercept $\alpha$ est possiblement nul, la pente $\beta$ restant inférieure à $1$.
+La connaissance a posteriori de $g$ est assez incertaine; $\lambda^2$ et $g$ sont fortement corrélés.
+
+```{r}
+knitr::kable(rbind(mean=apply(X = alphabetalambda2g,2,mean),std=apply(X = alphabetalambda2g,2,var)^0.5,apply(X = alphabetalambda2g,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+knitr::kable(cor(alphabetalambda2g),dig=3)
+```
+
+La vraisemblance à $t$ s'écrit:
+$$\begin{gathered}
+  {L_t} = [{{\bar X}_t},{V_t}^2|{Z_{1t}},{Z_2}] \hfill \\
+  {L_t} \propto {Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}S}}{{2{\lambda ^2}}}\left\{ {{{\left( {{{\bar X}_t} - \alpha  - \beta {Z_{1t}}} \right)}^2}} \right\} \times {Z_{2t}}^{\frac{S}{2} - \frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{{2{\lambda ^2}}}\left\{ {\left( {S - 1} \right){V_t}^2} \right\} \hfill \\ 
+\end{gathered}$$
+
+La vraisemblance complète quant à elle est légèrement plus compliquée:
+$$\begin{gathered}
+  C{L_t} = [{{\bar X}_t},{V_t}^2,{Z_{1t}},{Z_2}] = [{{\bar X}_t},{V_t}^2|{Z_{1t}},{Z_{2t}}] \times [{Z_{1t}},{Z_{2t}}] \hfill \\
+  C{L_t} \propto {L_t} \times \left( {{Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{2}Z_{1t}^2} \right) \times \left( {Z_{2t}^{g - 1}\exp  - {Z_{2t}}} \right) \hfill \\ 
+\end{gathered}$$
+
+En développant:
+$$\begin{gathered}
+  C{L_t} \propto \left( {{Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{2}\left\{ {Z_{1t}^2 + \frac{{S{\beta ^2}}}{{{\lambda ^2}}}{{\left( {{Z_{1t}} - \frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)}^2}} \right\}} \right) \hfill \\
+   \times \left( {Z_{2t}^{g + \frac{S}{2} - 1}\exp  - {Z_{2t}}(1 + \frac{{\left( {S - 1} \right){V_t}^2}}{{2{\lambda ^2}}})} \right) \hfill \\ 
+\end{gathered}$$
+
+puis en regroupant:
+
+$$\begin{gathered}
+  Z_{1t}^2 + \frac{{S{\beta ^2}}}{{{\lambda ^2}}}{\left( {{Z_{1t}} - \frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)^2} = \left( {\frac{{S{\beta ^2} + {\lambda ^2}}}{{{\lambda ^2}}}} \right){\left( {Z_{1t}^{} - \left( {\frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)\frac{{S{\beta ^2}}}{{S{\beta ^2} + {\lambda ^2}}}} \right)^2} \hfill \\
+   + \left\{ {\left( {\frac{{S{{\left( {{{\bar X}_t} - \alpha } \right)}^2}}}{{S{\beta ^2} + {\lambda ^2}}}} \right)} \right\} \hfill \\ 
+\end{gathered}$$
+
+la conjugaison adhoc permet d'obtenir les conditionnelles a posteriori
+
+$$\begin{gathered}
+  {Z_{2t}}|{{\bar X}_t},{V_t}^2 \sim Gamma(g + \frac{S}{2},1 + \frac{{\left( {S - 1} \right){V_t}^2}}{{2{\lambda ^2}}} + \left( {\frac{{S{{\left( {{{\bar X}_t} - \alpha } \right)}^2}}}{{2\left( {S{\beta ^2} + {\lambda ^2}} \right)}}} \right)) \hfill \\
+  {Z_{1t}}|{Z_{2t}},{{\bar X}_t},{V_t}^2 \sim N(\left( {\frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)\frac{{S{\beta ^2}}}{{S{\beta ^2} + {\lambda ^2}}},{\left\{ {\left( {\frac{{S{\beta ^2} + {\lambda ^2}}}{{{\lambda ^2}}}} \right){Z_{2t}}} \right\}^{ - 1}}) \hfill \\ 
+\end{gathered}$$
+
+#### Nota:
+Je pense qu' il y a une erreur typographique dans le papier de Jacques en page 8 pour le calcul de l'espérance de $Z_1$.
+
+```{r}
+alpha<-mean(alphabetalambda2g[,"alpha"])
+beta<-mean(alphabetalambda2g[,"beta"])
+lambda2<-mean(alphabetalambda2g[,"lambda2"])
+g<-mean(alphabetalambda2g[,"g"])
+S<-50
+N<-dim(apprentissage)[1]
+apprentissage %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
+m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
+precision_Z1=(S*beta^2+lambda2)/lambda2, 
+Z2=rgamma(N,a_Z2,b_Z2),
+Z1=rnorm(N,m_Z1,(precision_Z1*Z2)^-0.5)) %>% ggplot(aes(x=theta, y=Z1))+
+  geom_point()+geom_smooth(method='lm')
+```
+
+
+## EMOS
+
+Je veux comparer à un modèle bayésien qui conditionne les valeurs de l'ensemble sur la *température vraie* que j'ai appellé $\theta$ car c' est  la notation conventionnelle de l'état de la nature d'un problème statistique. Je propose :
 $$ \theta \sim N(0,1) \\
  \bar{X}\vert (V^2,\theta) \sim N(a\times \theta +b , c+ d\times V^2) \\ log(V^2) \sim N(g,s^2)
  $$
@@ -137,6 +348,109 @@ $$ \theta \sim N(0,1) \\
  
  La loi prédictive (c-à-d conditionnelle sachant les résumés de l'ensemble $\bar{X}$ et $V^2$) est ici "immédiate", par conjugaison normale:
  
- $$\theta \vert (\bar{X},V^2,a,b,c,d) \sim N(\frac {\bar{X}-b}{a}, \frac{1}{1+\frac{a^2}{c+ d\times V^2}})$$
+ $$\theta \vert (\bar{X},V^2,a,b,c,d) \sim N\left\{ {\left( {\frac{{\bar X}}{a} - b} \right)\frac{{{a^2}}}{{{a^2} + c + d{V^2}}},\frac{{c + d{V^2}}}{{{a^2} + c + d{V^2}}}} \right\}$$
+ 
 
-Ses performances seront analysées sur un échantillon de validation.
+Ses performances seront analysées sur un échantillon de validation. 
+Prenons par exemple l'écheance à 4 jours des années 2005-2008.
+
+```{r}
+d %>% filter(Year < 2010, Echeance == 4, !is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+  dplyr::select(theta,xbar,v2) %>% filter(!is.na(theta),
+                                   !is.na(xbar),
+                                   !is.na(v2)) -> 
+  learning_sample
+```
+
+
+On va réaliser l'inférence bayésienne des coefficients $a,b,c,d$
+
+
+```{r}
+model_string <- "
+model{
+for (i in 1:N){
+m[i] <- a*theta[i]+b
+preci[i]<- 1/(c+d*v2[i])
+xbar[i] ~ dnorm(m[i], preci[i])
+}
+a ~ dunif(-10,10)
+b ~ dunif(-10,10)
+c ~ dunif(0,10)
+d ~ dunif(0,10)
+}
+"
+params=c("a","b","c","d")
+data <- list(theta=learning_sample$theta,
+             xbar=learning_sample$xbar,
+             v2=learning_sample$v2,
+             N=length(learning_sample$theta))
+temp<-jags(data = data, model.file = textConnection(model_string),
+           parameters.to.save = params,n.chains = 3,
+           n.burnin = 500,n.iter = 1000)
+```
+
+```{r}
+temp$BUGSoutput$sims.matrix %>% 
+  as.data.frame() %>% dplyr::select(a,b,c,d) ->abcd
+  abcd %>% gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5) +
+  facet_grid(param~.,scales = "free_x") 
+
+```
+
+Les coefficients $a,b,c$ sont assez précisément estimés sauf la valeur de $d$ qui est plus incertaine, tandis que les coefficients $c$ et $d$ sont anti-corrélés.
+
+```{r}
+knitr::kable(rbind(mean=apply(X = abcd,2,mean),std=apply(X = abcd,2,var)^0.5,apply(X = abcd,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+knitr::kable(cor(abcd),dig=3)
+```
+
+## Predictive bayésienne
+
+Sur un échantillon de validation (ici 2011-2015), on va étudier le comportement du prédicteur bayésien.
+ $$\theta \vert (\bar{X},V^2,a,b,c,d) \sim N\left\{ {\left( {\frac{{\bar X}-b}{a}} \right)\frac{{{a^2}}}{{{a^2} + c + d{V^2}}},\frac{{c + d{V^2}}}{{{a^2} + c + d{V^2}}}} \right\}$$
+ 
+
+```{r}
+d %>% filter(Year > 2010, Echeance == 4, !is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+  filter(!is.na(theta),!is.na(xbar),!is.na(v2)) -> 
+  validation_sample
+indices<-sample(x = 1:dim(abcd)[1], size=50, rep=F)
+A=abcd[indices,1]
+B=abcd[indices,2]
+m=(outer(validation_sample$xbar,A,'/')-B/A)
+C=abcd[indices,3]
+D=abcd[indices,4]
+s=outer(validation_sample$v2,D,'*')+C
+m=m*A*A/(A^2+s)
+s=(s/s+A*A)^0.5
+YPRED=matrix(
+  rnorm(n = prod(dim(s)), mean = m, sd = s),
+  nr=dim(s)[1],nc=dim(s)[2] )*
+  validation_sample$T_std_ref_lis+validation_sample$T_moy_ref_lis
+moyPRED=apply(YPRED, 1, mean)
+stdPRED=apply(YPRED, 1, sd)
+rm(YPRED)
+```
+
+
+$$\begin{gathered}
+  {X_{ts}} = \alpha  + \beta {Z_{1t}} + \lambda \sigma {Z_{2t}}^{ - O.5}{\varepsilon _{ts}} \hfill \\
+  L{L_t} \propto  - {Z_{2t}}\frac{{\sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}}  + S{{({{\bar X}_t} - \alpha  - \beta {Z_{1t}})}^2}}}{{2{\lambda ^2}{\sigma ^2}}} + \frac{S}{2}\log ({Z_{2t}}) \hfill \\
+  {{\bar X}_t} \sim N\left( {\alpha  + \beta {Z_{1t}},{\raise0.7ex\hbox{$1$} \!\mathord{\left/
+ {\vphantom {1 {\left( {\frac{{S{Z_{2t}}}}{{{\lambda ^2}{\sigma ^2}}}} \right)}}}\right.\kern-\nulldelimiterspace}
+\!\lower0.7ex\hbox{${\left( {\frac{{S{Z_{2t}}}}{{{\lambda ^2}{\sigma ^2}}}} \right)}$}}} \right) \hfill \\
+  \sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}}  = \frac{{S - 1}}{S}{V^2} \sim Gamma(a = 1,b = \frac{{{Z_{2t}}}}{{2{\lambda ^2}{\sigma ^2}}}) \hfill \\ 
+\end{gathered}$$
+
+
+
+
