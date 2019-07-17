@@ -395,11 +395,11 @@ Z1=rnorm(N,m_Z1,(precision_Z1*Z2)^-0.5)) %>% ggplot(aes(x=theta, y=Z1))+
   geom_point()+geom_smooth(method='lm')+geom_abline(slope=1,intercept=0, color="white")
 ```
 
-La suggestion de Jacques est de repasser en marginale:
+La suggestion de Jacques est de repasser en marginale et de travailler avec les QNT:
 
 * la cible qui a été centrée réduite est déjà N(0,1).
 
-* $Z_1$ est marginalement Student à $2g$ degrés de liberté. $g^{0.5} \times Z_1$ est Student unitaire à $2g$ degrés de liberté.
+* $Z_1$ est marginalement Student à $2g$ degrés de liberté. Quant à $g^{0.5} \times Z_1$, il est Student unitaire à $2g$ degrés de liberté.
 
 ```{r}
 apprentissage %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
@@ -417,9 +417,12 @@ m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
 precision_Z1=(S*beta^2+lambda2)/lambda2, 
 Z2=rgamma(N,a_Z2,b_Z2),
 Z1=rnorm(N,m_Z1,(precision_Z1*Z2)^-0.5),
-QNT_Z1= qnorm(pt(sqrt(g)*Z1,df=2*g))) %>% lm(QNT_Z1~theta-1, data=.)
+QNT_Z1= qnorm(pt(sqrt(g)*Z1,df=2*g))) -> apprentissage
+summary( lm(QNT_Z1~theta-1, data=apprentissage))
+ro=lm(QNT_Z1~theta-1, data=apprentissage)$coef
 ```
-Sur l'échantillon d'apprentissage, on trouve un coefficient de corrélation $\hat{\rho}=0.8803$ entre le QNT de la cible et le QNT d'une valeur tirée au hasard dans la loi conditionnelle du premier pivot sachant les deux statistiques résumées de l'ensemble échangeable.
+
+Sur l'échantillon d'apprentissage, on trouve un coefficient de corrélation $\hat{\rho}=0.8803$ entre le QNT de la cible et le QNT d'une valeur tirée au hasard dans la loi conditionnelle du premier pivot sachant les deux statistiques résumant l'ensemble échangeable.
 
 ## Analyse prédictive grâce au modèle à deux pivots
 
@@ -437,7 +440,40 @@ $[\theta|QNT]$ est $N(m'_t,s'_t^2)$ avec
 
 * $\frac{m'}{s'^2}=\frac{m}{s^2}+\frac{QNT}{\rho}\frac{\rho^2}{1-\rho^2}$
 
-pour $m=0, s=1$, c'est à dire un prior climatologique pour produire une prévision probabiliste calibrée $[\theta|QNT]$ est $N(\rho \times QNT,1-\rho^2)$
+pour $m=0, s=1$, c'est à dire pour un prior climatologique pour produire une prévision probabiliste calibrée, on retrouve les résultats de la régression $[\theta|QNT]$ est $N(\rho \times QNT,1-\rho^2)$
+
+```{r}
+validation_sample %>% filter(Echeance==4) %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
+m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
+precision_Z1=(S*beta^2+lambda2)/lambda2) ->validation 
+```
+```{r}
+GenereMeanPred=function(a_Z2,b_Z2,m_Z1,precision_Z1){
+  Rep=100
+  z2=rgamma(Rep,a_Z2,b_Z2)
+  z1=rnorm(Rep,m_Z1,(precision_Z1*z2)^-0.5)
+  QNT= qnorm(pt(sqrt(g)*z1,df=2*g))
+  mpred=ro*mean(QNT)
+}
+GenereVarPred=function(a_Z2,b_Z2,m_Z1,precision_Z1){
+  Rep=100
+  z2=rgamma(Rep,a_Z2,b_Z2)
+  z1=rnorm(Rep,m_Z1,(precision_Z1*z2)^-0.5)
+  QNT= qnorm(pt(sqrt(g)*z1,df=2*g))
+  vpred=ro*ro*var(QNT)+(1-ro^2)
+}
+validation %>% group_by(Date) %>% 
+  mutate(mpred=GenereMeanPred(a_Z2,b_Z2,m_Z1,precision_Z1),
+         vpred=GenereVarPred(a_Z2,b_Z2,m_Z1,precision_Z1)) %>%
+  ungroup() %>% mutate(crps_clim=crps(obs=theta,pred = data.frame(0*xbar,1, na.rm=T))$crps,
+              crps_ens=crps(obs=theta,pred = data.frame(xbar,v2^0.5, na.rm=T))$crps,
+              crps_krz=crps(obs=theta,pred = data.frame(mpred,vpred^0.5, na.rm=T))$crps
+              ) %>% group_by(Year) %>% 
+  summarize(CRPS_ens=mean(crps_ens,na.rm=T),CRPS_clim=mean(crps_clim,na.rm=T), 
+            CRPS_krz=mean(crps_krz,na.rm=T), counts=n())
+```
+
+
 
 ## EMOS
 
