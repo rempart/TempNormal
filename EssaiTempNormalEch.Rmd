@@ -2,7 +2,7 @@
 title: "Modèle d'ensembles échangeable"
 subtitle: " Un Exemple de Températures pour l'approche normale"
 author: Eric Parent
-date: "16 juillet 2019"
+date: "17 juillet 2019"
 output: 
   html_notebook:
     toc: yes
@@ -226,7 +226,7 @@ d %>% filter(Year > 2010 ,!is.na(Calendaire)) %>%
 
 # Modèles d'ensemble
 
-## Analyse préquentielle du modèle à deux pivots
+## Modèle Gamma-Normal à deux pivots
 
 Rappelons la suggestion de Jacques dans son document *EnsembleSaison.*
 Les membres s'appuient sur deux pivots latents $Z_{1t}$ et $Z_{2t}$, de telle sorte que le modèle échangeable s'écrit:
@@ -263,7 +263,7 @@ learning_sample  %>% filter( Echeance == 4) %>%
                    dplyr::select(theta,xbar,v2) -> apprentissage
 ```
 
-On procède à l'estimation bayésienne de $\alpha ,\beta ,\lambda , g$ grâce au logiciel d'inférence bayésienne *Jags*.
+On procède à l'estimation bayésienne de $\alpha ,\beta ,\lambda , g$ grâce au logiciel d'inférence bayésienne *Jags*. (A noter qu'on pourrait également utiliser STAN.)
 
 ```{r}
 model_string <- "
@@ -292,7 +292,7 @@ data <- list(xbar=apprentissage$xbar,
              S=50)
 temp<-jags(data = data, model.file = textConnection(model_string),
            parameters.to.save = params,n.chains = 3,
-           n.burnin = 500,n.iter = 1000)
+           n.burnin = 5000,n.iter = 10000)
 ```
 
 
@@ -322,11 +322,37 @@ knitr::kable(rbind(mean=apply(X = alphabetalambda2g,2,mean),std=apply(X = alphab
 knitr::kable(cor(alphabetalambda2g),dig=3)
 ```
 
+## Analyse marginale du modèle à deux pivots
+
 La vraisemblance à $t$ s'écrit:
 $$\begin{gathered}
   {L_t} = [{{\bar X}_t},{V_t}^2|{Z_{1t}},{Z_2}] \hfill \\
   {L_t} \propto {Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}S}}{{2{\lambda ^2}}}\left\{ {{{\left( {{{\bar X}_t} - \alpha  - \beta {Z_{1t}}} \right)}^2}} \right\} \times {Z_{2t}}^{\frac{S}{2} - \frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{{2{\lambda ^2}}}\left\{ {\left( {S - 1} \right){V_t}^2} \right\} \hfill \\ 
 \end{gathered}$$
+
+On va travailler comme Krzysztofowicz en négligeant les incertitudes des hyper-paramètres du modèle marginal. 
+
+```{r}
+alpha<-mean(alphabetalambda2g[,"alpha"])
+beta<-mean(alphabetalambda2g[,"beta"])
+lambda2<-mean(alphabetalambda2g[,"lambda2"])
+g<-mean(alphabetalambda2g[,"g"])
+S<-50
+Repet <-1000
+data.frame(Z2=rgamma(Repet,g,1), Z1=rnorm(Repet)) %>% 
+  mutate(xbar=alpha+beta*Z1+sqrt(lambda2/Z2/S)*rnorm(Repet),
+  v2=lambda2/Z2/(S-1)*rchisq(Repet,df=S-1)) %>% filter(v2<2) %>% 
+  dplyr::select(xbar,v2) %>% gather(key,value) %>% ggplot(aes(x=value,color=key))+
+  geom_histogram(data= apprentissage %>% dplyr::select(xbar,v2) %>% filter(v2<2) %>%  gather(key,value), stat = "density")+
+  geom_freqpoly(stat = "density", color='black')+facet_wrap(~key,scales="free")
+  
+
+
+```
+
+## Analyse préquentielle du modèle à deux pivots
+
+### Expression de la conditionnelle des deux variables pivots latentes
 
 La vraisemblance complète quant à elle est légèrement plus compliquée:
 $$\begin{gathered}
@@ -353,6 +379,7 @@ $$\begin{gathered}
   {Z_{2t}}|{{\bar X}_t},{V_t}^2 \sim Gamma(g + \frac{S}{2},1 + \frac{{\left( {S - 1} \right){V_t}^2}}{{2{\lambda ^2}}} + \left( {\frac{{S{{\left( {{{\bar X}_t} - \alpha } \right)}^2}}}{{2\left( {S{\beta ^2} + {\lambda ^2}} \right)}}} \right)) \hfill \\
   {Z_{1t}}|{Z_{2t}},{{\bar X}_t},{V_t}^2 \sim N(\left( {\frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)\frac{{S{\beta ^2}}}{{S{\beta ^2} + {\lambda ^2}}},{\left\{ {\left( {\frac{{S{\beta ^2} + {\lambda ^2}}}{{{\lambda ^2}}}} \right){Z_{2t}}} \right\}^{ - 1}}) \hfill \\ 
 \end{gathered}$$
+
 
 #### Nota:
 Je pense qu' il y a une erreur typographique dans le papier de Jacques en page 8 pour le calcul de l'espérance de $Z_1$.
