@@ -2,7 +2,7 @@
 title: "Modèle d'ensembles échangeable"
 subtitle: " Un Exemple de Températures pour l'approche normale"
 author: Eric Parent
-date: "17 juillet 2019"
+date: "18 juillet 2019"
 output: 
   html_notebook:
     toc: yes
@@ -20,6 +20,13 @@ J'imagine en fait deux papiers de ce type:
 
 * le second, à venir, sur des données zéros-inflatées de précipitations, où l'on mettrait en oeuvre les modèles Bernoulli-Gamma et lois des fuites. Ces papiers pourront servir de base à des articles publiables à terme... que j'espère pas très lointain.
 
+## Remarques
+
+* J'ai utilisé le logiciel JAGS (à installer) interfacé avec R par le package R2jags (à charger) pour réaliser commodément l'inférence bayésienne de paramètres tout en haut du modèle hiérarchique, munis d'une loi a priori non informative. On aurait pu aussi bien utiliser STAN. 
+
+* Mais on aurait pu  tout aussi bien réaliser l'inférence fréquentiste EM de ces coefficients, car quand nous travaillerons en prédictif, je négligerai en première approche l' incertitude  qui leur est attachée (comme le fait d'ailleur Krzysztofowicz).
+
+
 # Analyses Descriptives
 
 ## Les données disponibles
@@ -27,6 +34,8 @@ J'imagine en fait deux papiers de ce type:
 rm(list=ls())
 # setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
 load("Ain@Vouglans.Rdata")
+#load("Buech@Chambons.Rdata")
+#load("Drac@Sautet.Rdata")
 library(tidyverse)
 library(tidyselect)
 library(lubridate)
@@ -43,15 +52,14 @@ Suite à la thèse de Marie Courbariaux, je dispose des données journalières d
 
 - le Drac à Sautet.
 
-Je propose de travailler dans toute la suite sur l'Ain à Vouglans, mais les programmes développés sont directement transposables aux deux autres stations. Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans) puis de 2O11 à 1015 (5 ans) pour des prévisions jusqu'à une échéance de 9 jours dans le *data.frame dtout*.
+Je propose de travailler dans toute la suite sur l'Ain à Vouglans, mais les programmes développés sont directement transposables aux deux autres stations. Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans avec échéance de 1 à 7 jours) puis de 2O11 à 1015 (5 ans pour des prévisions jusqu'à une échéance de 9 jours) dans le *data.frame dtout*.
 
 
 ```{r}
 dhisto %>% glimpse
 range(dhisto$Date)
 dtout %>% head()
-unique(dtout$Year)
-unique(dtout$Echeance)
+dtout %>% group_by(Year) %>% summarize(MaxEch=max(Echeance), counts=n())
 ```
 
 ## Analyse climatologique
@@ -110,6 +118,30 @@ dtout %>%  mutate(Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
   dplyr::select(-starts_with("Run")) ->d
 ```
 
+Les deux figures suivantes illustrent le *spaghetti-plot* des membres de l' ensemble du CEP à 7 jours puis la gamme à deux écart-types autour de la moyenne d'ensemble sur la période de mars à juin 2006.
+
+```{r}
+dtout%>% filter(Year==2006, Month %in% c(3,4,5,6), Echeance ==7) %>% 
+  dplyr::select(Date,Obs, starts_with("Run")) %>% gather( key, value, -Date,-Obs ) %>% ggplot(aes(x=Date, color=key)) +geom_path(aes(y=value))+ geom_path(aes(y=Obs))+geom_point(aes(y=Obs),shape=21,fill="red", color='black')+guides(color = FALSE) + labs(caption = "Spaghetti des membres de l' ensemble du CEP à 7 jours \n en rouge: températures journalières observées ")
+ 
+d %>% filter(Year==2006, Month %in% c(3,4,5,6), Echeance ==7) %>% ggplot(aes(x=Date)) +
+ geom_ribbon(aes(ymin=Xbar-2*sqrt(V2), ymax=Xbar+2*sqrt(V2)), fill="lightblue")+
+  geom_ribbon(aes(ymin=Xbar-1*sqrt(V2), ymax=Xbar+1*sqrt(V2)), fill="lightgrey")+ geom_path(aes(y=Obs))+geom_point(aes(y=Obs),shape=21,fill="red")+geom_path(aes(y=Xbar),col='blue')+ labs(caption = "Prédiction et intervalles de prévision à 95% \n en bleu: moyenne d' ensemble du CEP à 7 jours \n en rouge: températures journalières observées ")
+```
+
+On peut chercher à verifier la bonne calibration vis à vis des quantiles normaux.
+```{r}
+qnorm(1-0.1/2)
+d %>% mutate(depasse10=(abs(Obs-Xbar)>qnorm(1-0.1/2)*V2^0.5),
+             depasse20=(abs(Obs-Xbar)>qnorm(1-0.2/2)*V2^0.5),
+             depasse30=(abs(Obs-Xbar)>qnorm(1-0.3/2)*V2^0.5)) %>%
+  group_by(Echeance) %>% summarise(BiaisRelatif= round(mean(Obs-Xbar,na.rm=T)/(var(Obs-Xbar,na.rm=T)^.5),dig=2),
+                                   P10=round(mean(depasse10,na.rm=T),dig=2), 
+                                   P20= round(mean(depasse20,na.rm=T),dig=2),
+                                   P30= round(mean(depasse30,na.rm=T),dig=2)) 
+```
+
+On voit que le phénomène naturel varie plus que la loi normale prédictive des membres ne le laisserait penser : à toutes les échéances, l'ensemble est biaisé et surconfiant; l'ensemble n'est pas prédictivement calibré.
 
 ### Relation entre moyenne de l'ensemble et température observée
 
@@ -292,7 +324,7 @@ data <- list(xbar=apprentissage$xbar,
              S=50)
 temp<-jags(data = data, model.file = textConnection(model_string),
            parameters.to.save = params,n.chains = 3,
-           n.burnin = 5000,n.iter = 10000)
+           n.burnin = 500,n.iter = 1000)
 ```
 
 
@@ -477,21 +509,13 @@ validation %>% group_by(Date) %>%
 
 ## EMOS
 
-Je veux comparer à un modèle bayésien qui conditionne les valeurs de l'ensemble sur la *température vraie* que j'ai appellé $\theta$ car c' est  la notation conventionnelle de l'état de la nature d'un problème statistique. Je propose :
-$$ \theta \sim N(0,1) \\
- \bar{X}\vert (V^2,\theta) \sim N(a\times \theta +b , c+ d\times V^2) \\ log(V^2) \sim N(g,s^2)
+Je veux comparer à ce modèle bayésien au calcul traditionnel EMOS qui brutalement impose une loi conditionnelle $[\theta|\bar{x},v^2]_{EMOS}$, sans se préoccuper de produire une structure cohérente de loi conjointe de toutes les variables en jeu.
+
+$$ \theta\vert (v^2,\bar{x}) \sim N(a\times \bar{x} +b , c+ d\times v^2) 
  $$
 
  
- L'inférence des coefficients $a,b,c,d,g,s^2$) sera menée sur un échantillon d'apprentissage.
- 
- La loi prédictive (c-à-d conditionnelle sachant les résumés de l'ensemble $\bar{X}$ et $V^2$) est ici "immédiate", par conjugaison normale:
- 
- $$\theta \vert (\bar{X},V^2,a,b,c,d) \sim N\left\{ {\left( {\frac{{\bar X}}{a} - b} \right)\frac{{{a^2}}}{{{a^2} + c + d{V^2}}},\frac{{c + d{V^2}}}{{{a^2} + c + d{V^2}}}} \right\}$$
- 
-
-Ses performances seront analysées sur un échantillon de validation. 
-Prenons par exemple l'écheance à 4 jours des années 2005-2008.
+L'inférence des coefficients $a,b,c,d,g$) sera menée sur le même échantillon (Ici pris par exemple avec l'écheance à 4 jours des années 2005-2008) d'apprentissage. Ses performances seront analysées sur le même échantillon de validation. (Ici pris par exemple l'écheance à 4 jours des années 2011-2015).
 
 ```{r}
 d %>% filter(Year < 2010, Echeance == 4, !is.na(Calendaire)) %>% 
@@ -501,7 +525,7 @@ d %>% filter(Year < 2010, Echeance == 4, !is.na(Calendaire)) %>%
   dplyr::select(theta,xbar,v2) %>% filter(!is.na(theta),
                                    !is.na(xbar),
                                    !is.na(v2)) -> 
-  learning_sample
+  learning_sample_EMOS
 ```
 
 
@@ -509,12 +533,12 @@ On va réaliser l'inférence bayésienne des coefficients $a,b,c,d$
 
 
 ```{r}
-model_string <- "
+model_string_EMOS <- "
 model{
 for (i in 1:N){
-m[i] <- a*theta[i]+b
+m[i] <- a*xbar[i]+b
 preci[i]<- 1/(c+d*v2[i])
-xbar[i] ~ dnorm(m[i], preci[i])
+theta[i] ~ dnorm(m[i], preci[i])
 }
 a ~ dunif(-10,10)
 b ~ dunif(-10,10)
@@ -523,11 +547,11 @@ d ~ dunif(0,10)
 }
 "
 params=c("a","b","c","d")
-data <- list(theta=learning_sample$theta,
-             xbar=learning_sample$xbar,
-             v2=learning_sample$v2,
-             N=length(learning_sample$theta))
-temp<-jags(data = data, model.file = textConnection(model_string),
+data <- list(theta=learning_sample_EMOS$theta,
+             xbar=learning_sample_EMOS$xbar,
+             v2=learning_sample_EMOS$v2,
+             N=length(learning_sample_EMOS$theta))
+temp<-jags(data = data, model.file = textConnection(model_string_EMOS),
            parameters.to.save = params,n.chains = 3,
            n.burnin = 500,n.iter = 1000)
 ```
@@ -549,33 +573,60 @@ knitr::kable(rbind(mean=apply(X = abcd,2,mean),std=apply(X = abcd,2,var)^0.5,app
 knitr::kable(cor(abcd),dig=3)
 ```
 
-## Predictive bayésienne
+## Test de la Prediction probabiliste EMOS
 
-Sur un échantillon de validation (ici 2011-2015), on va étudier le comportement du prédicteur bayésien.
- $$\theta \vert (\bar{X},V^2,a,b,c,d) \sim N\left\{ {\left( {\frac{{\bar X}-b}{a}} \right)\frac{{{a^2}}}{{{a^2} + c + d{V^2}}},\frac{{c + d{V^2}}}{{{a^2} + c + d{V^2}}}} \right\}$$
- 
+Sur un échantillon de validation (ici 2011-2015), on va étudier le comportement du prédicteur EMOS.
 
 ```{r}
-d %>% filter(Year > 2010, Echeance == 4, !is.na(Calendaire)) %>% 
-  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
-         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
-         v2=  V2/(T_std_ref_lis^2) ) %>% 
-  filter(!is.na(theta),!is.na(xbar),!is.na(v2)) -> 
-  validation_sample
-indices<-sample(x = 1:dim(abcd)[1], size=50, rep=F)
-A=abcd[indices,1]
-B=abcd[indices,2]
-m=(outer(validation_sample$xbar,A,'/')-B/A)
-C=abcd[indices,3]
-D=abcd[indices,4]
-s=outer(validation_sample$v2,D,'*')+C
-m=m*A*A/(A^2+s)
-s=(s/s+A*A)^0.5
-YPRED=matrix(
-  rnorm(n = prod(dim(s)), mean = m, sd = s),
-  nr=dim(s)[1],nc=dim(s)[2] )*
-  validation_sample$T_std_ref_lis+validation_sample$T_moy_ref_lis
-moyPRED=apply(YPRED, 1, mean)
-stdPRED=apply(YPRED, 1, sd)
-rm(YPRED)
+a<-mean(abcd[,'a'])
+b<-mean(abcd[,'b'])
+c<-mean(abcd[,'c'])
+d<-mean(abcd[,'d'])
+
+validation %>% group_by(Date) %>% 
+  mutate(mpred=GenereMeanPred(a_Z2,b_Z2,m_Z1,precision_Z1),
+         vpred=GenereVarPred(a_Z2,b_Z2,m_Z1,precision_Z1)) %>%
+  ungroup() %>% mutate(m_EMOS=a*xbar+b, v2_EMOS=c+d*v2) %>% 
+  mutate(crps_clim=crps(obs=theta,pred = data.frame(0*xbar,1, na.rm=T))$crps,
+              crps_ens=crps(obs=theta,pred = data.frame(xbar,v2^0.5, na.rm=T))$crps,
+              crps_krz=crps(obs=theta,pred = data.frame(mpred,vpred^0.5, na.rm=T))$crps,
+              crps_EMOS=crps(obs=theta,pred = data.frame(m_EMOS,v2_EMOS^0.5, na.rm=T))$crps
+              ) %>% group_by(Year) %>% 
+  summarize(CRPS_clim=mean(crps_clim,na.rm=T),
+            CRPS_ens=mean(crps_ens,na.rm=T),CRPS_EMOS=mean(crps_EMOS,na.rm=T), 
+            CRPS_krz=mean(crps_krz,na.rm=T), counts=n())
 ```
+
+# Conclusions
+
+## Eric toujours pas content!
+
+Les résultats numériques CRPS ne semblent hélas pas plaider en faveur du BFS, supplanté par l'ensemble brut, lui même supplanté par EMOS brutalement calé, mais cette étude préliminaire mérite  d'être poursuivie. Les pistes à explorer sont:
+
+0. Vérifier que je ne me suis pas planté dans les calculs...
+
+1. Regarder ce qui se passe à d'autres échéances que 4 jours,
+
+2. Tenter une estimation adaptative, en raffinant sur la période de l'année, et/ou l'assimilation des températures d'ensemble des jours précédents pour produire une prédictive BFS *collant* mieux à la période.
+
+3. Regarder ce qui se passe pour d'autres stations.
+
+## Extensions intéressantes
+
+On peut disposer sur ces stations d'une autre prévision d'ensemble, par exemple les analogues. Comment intégrerait on cette information additionnelle en vue d'améliorer la prédictive BFS?
+
+* au niveau du prior de $[\theta_t]$ dans l'équation 
+$$[\theta|X]=\int_{QNT_{CEP}} \frac{[QNT_{CEP}|\theta]\times [\theta_{Analogues}]}{[QNT_{CEP}]} \times [QNT_{CEP}|X] \times dQNT_{CEP}$$
+
+* ou bien, au niveau des QNT dans l'équation ?
+$$[\theta|X]=\int_{QNT_{CEP,ANA}} \frac{[QNT_{CEP},QNT_{ANA}|\theta]\times [\theta]}{[QNT_{CEP},QNT_{ANA}]} \times [QNT_{CEP},QNT_{ANA}|X] \times dQNT_{CEP} \times dQNT_{ANA}$$
+
+
+
+
+
+
+
+
+
+
