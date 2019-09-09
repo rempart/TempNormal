@@ -2,7 +2,7 @@
 title: "Modèle d'ensembles échangeable"
 subtitle: " Un Exemple de Températures pour l'approche normale"
 author: Eric Parent
-date: "18 juillet 2019"
+date: "25 juillet 2019"
 output: 
   html_notebook:
     toc: yes
@@ -134,11 +134,15 @@ On peut chercher à verifier la bonne calibration vis à vis des quantiles norma
 qnorm(1-0.1/2)
 d %>% mutate(depasse10=(abs(Obs-Xbar)>qnorm(1-0.1/2)*V2^0.5),
              depasse20=(abs(Obs-Xbar)>qnorm(1-0.2/2)*V2^0.5),
-             depasse30=(abs(Obs-Xbar)>qnorm(1-0.3/2)*V2^0.5)) %>%
+             depasse30=(abs(Obs-Xbar)>qnorm(1-0.3/2)*V2^0.5),
+             depasse40=(abs(Obs-Xbar)>qnorm(1-0.4/2)*V2^0.5),
+             depasse50=(abs(Obs-Xbar)>qnorm(1-0.5/2)*V2^0.5)) %>%
   group_by(Echeance) %>% summarise(BiaisRelatif= round(mean(Obs-Xbar,na.rm=T)/(var(Obs-Xbar,na.rm=T)^.5),dig=2),
                                    P10=round(mean(depasse10,na.rm=T),dig=2), 
                                    P20= round(mean(depasse20,na.rm=T),dig=2),
-                                   P30= round(mean(depasse30,na.rm=T),dig=2)) 
+                                   P30= round(mean(depasse30,na.rm=T),dig=2),
+                                   P40= round(mean(depasse40,na.rm=T),dig=2),
+                                   P50= round(mean(depasse50,na.rm=T),dig=2)) 
 ```
 
 On voit que le phénomène naturel varie plus que la loi normale prédictive des membres ne le laisserait penser : à toutes les échéances, l'ensemble est biaisé et surconfiant; l'ensemble n'est pas prédictivement calibré.
@@ -378,7 +382,7 @@ data.frame(Z2=rgamma(Repet,g,1), Z1=rnorm(Repet)) %>%
   geom_histogram(data= apprentissage %>% dplyr::select(xbar,v2) %>% filter(v2<2) %>%  gather(key,value), stat = "density")+
   geom_freqpoly(stat = "density", color='black')+facet_wrap(~key,scales="free")
 ```
-Sur cette comparaison estimation empirique et modèle, on voit que les lois marginales se calent raisonnablement avec notre modèle gamma-normal echangeable, malgré que nou sn'ayons pas tenu compte des incertitudes à propos des hyper-paramètres ($\alpha,\beta, \gamma^2, g$) du modèle marginal.
+Sur cette comparaison estimation empirique et modèle, on voit que les lois marginales se calent raisonnablement bien avec notre modèle gamma-normal echangeable, malgré que nous n'ayons pas tenu compte des incertitudes à propos des hyper-paramètres ($\alpha,\beta, \gamma^2, g$) du modèle marginal.
 
 ## Analyse préquentielle du modèle à deux pivots
 
@@ -492,7 +496,7 @@ GenereVarPred=function(a_Z2,b_Z2,m_Z1,precision_Z1){
   z2=rgamma(Rep,a_Z2,b_Z2)
   z1=rnorm(Rep,m_Z1,(precision_Z1*z2)^-0.5)
   QNT= qnorm(pt(sqrt(g)*z1,df=2*g))
-  vpred=ro*ro*var(QNT)+(1-ro^2)
+  vpred=(1-ro^2) +ro*ro*var(QNT)
 }
 validation %>% group_by(Date) %>% 
   mutate(mpred=GenereMeanPred(a_Z2,b_Z2,m_Z1,precision_Z1),

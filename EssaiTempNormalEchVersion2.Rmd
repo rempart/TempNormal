@@ -1,0 +1,829 @@
+---
+title: "Modèle d'ensembles échangeable- Version 2"
+subtitle: " Un Exemple de Températures pour l'approche normale"
+author: Éric Parent
+date: "31 août 2019"
+output: 
+  html_notebook:
+    toc: yes
+    toc_depth: 2
+    number_sections: yes
+---
+# Introduction
+
+Jacques et moi avons beaucoup communiqué sur les modèles d'ensemble échangeables, mais absolument rien valorisé en terme d'article vis à vis de la communauté d'hydrologie statistique que nous nous plaisons tant à critiquer. 
+D'autre part, nos accords (ainsi que désaccords) théoriques sur l'intérêt du caractère échangeable pour modéliser les ensembles et du Bayesian Forecasting System de Krzysztofowicz afin de construire une prédictive resteront du domaine des plaisantes joutes epistolaires limitées à deux crocodiles bayésiens si nous ne montrons pas leur caractère opératoire sur de "vraies" jeux de données. Je propose donc de traiter de tels jeux de données pour lesquels on mettra en évidence les améliorations concrètes et pratiques que ces méthodes apportent (au delà de leur caractère théorique rationel et cohérent).
+C'est l'objectif de ce papier, écrit en *Markdown html notebook* dans l'intention de donner une illustration informatique et applicative *en même temps* que du texte plus théorique.
+J'imagine en fait deux papiers de ce type:
+
+* le premier ici sur le modèle normal échangeable inspiré du modèle à deux pivots (voir pour le *jus théorique* le texte de Jacques *ENSEMBLESAISON.tex*) que l'on peut illustrer sur des données de températures d'EDF-DTG,  
+
+* le second, à venir, sur des données zéros-inflatées de précipitations, où l'on mettrait en oeuvre les modèles Bernoulli-Gamma et lois des fuites. Ces papiers pourront servir de base à des articles publiables à terme... que j'espère pas très lointain.
+
+## Remarques
+
+* J'ai utilisé le logiciel JAGS (à installer) interfacé avec R par le package R2jags (à charger) pour réaliser commodément l'inférence bayésienne de paramètres tout en haut du modèle hiérarchique, munis d'une loi a priori non informative. On aurait pu aussi bien utiliser STAN. 
+
+* Mais on aurait pu  tout aussi bien réaliser l'inférence fréquentiste EM de ces coefficients, car quand nous travaillerons en prédictif, je négligerai en première approche l' incertitude  qui leur est attachée (comme le fait d'ailleur Krzysztofowicz).
+
+* Jacques a exprimé être en complet désaccord avec la philosophie interprétative statistique qui sous-tendait les chunks de la première version de ce document. Plus précisément, à partir du paragraphe sur l'  *Apprentissage d'un lien des deux variables pivots latentes avec la variable cible* et la suite, et, en conséquence, avec les calculs resultant de ces hypothèses. Sa critique était la suivante:
+
+*Le point de départ est l'interprétation des lois de $Z_{2t}=dgamma (.,2g)$ et $Z_{1t}|Z_{2t}=dnorm(.,0,Z_{2t}^{-1})$ a priori comme soi disant lois marginales de ces latentes.On ne peut interpréter les latentes Z1t,Z2t indépendamment du modèle des X. Les priors pour chaque t ont la même structure, certes, mais elles ne sont utiles que pour modéliser l'information des membres via Bayes.et ce sont les conditionnelles complètes [Z2t|cc] et [Z1t|Z2t,g;cc...] (a posteriori) des latentes considérées comme pivots des prévisions qui importent. Ce n'est pas parce que ces priors multiples dépendent d'un paramètre constant g qu'il faut leur donner une signification marginale. Ce sont les moyennes et écart types d'ensemble qui sont les seules informations marginales à considérer. Il est donc clair que ces latentes ne sont déterminées qu'en distributions conditionnelles. En fait Eric ne génère (avec ses hypothèses) qu'un couple pour chaque t de l'échantillon d'apprentissage ce qui est très peu si on voulait tenir compte de l'aléa des latentes "latentes". De plus dans la deuxième phase prédictive de la BFS, il utilise la NQT avec ces soi disant distributions marginales de Z1 ET Z2. En fait et de façon cohérente, et d'après Roman K, c'est la distribution marginale de l'information X et donc des Z (en distributions considérées comme informatives et don fonctions des membres) si ces latentes sont utilisées en prédictif*
+
+*Mais là on peut utiliser les relations entre échangeabilité et exhaustivité (voir Lauritzen 2007) et les nouvelles formulations du théorème de représentativité qui montrent que dans le conditionnement les Z peuvent être remplaçées par des statistiques exhaustives, dites résumantes, si le modèle d'ensemble le permet ce qui est le cas). L'avantage considérable est de remplacer les Z distribués pat des statistiques ponctuelles  t à t, moyennes et écart-types d'ensemble dont les distributions marginales sont aussi parfaitement déterminées (par les paramètres plus g plus S) et donc justiciables d'une NQT sans difficultés  --Eu égard aux aspects + ou moins non-paramétriques des différentes methodes "d'habillage", aux imprécisions des simulations non répétées et aux difficultés de "lecture" des crps, LES RESULTATS POURRAIENT PEUT ETRE ALORS CONTENTER ERIC ET LUI FAIRE PASSER DE BONNES VACANCES. Mais là le principal avantage des modèles échangeables est la parsimonie de leur calage et faut des méthodes de validation autres que les CRPS globaux, nonobstant leur intouchabilité!*
+
+Cette version reprend donc le papier initial, mais en le modifiant à partir du paragraphe sur l'  *Apprentissage d'un lien des deux variables pivots latentes avec la variable cible*, afin de suivre les conseils de Jacques et travailler avec les statistiques résumantes de l'ensemble, **moyenne** et **variance**.
+
+# Analyses Descriptives
+
+## Les données disponibles
+```{r}
+rm(list=ls())
+# setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
+load("Ain@Vouglans.Rdata")
+#load("Buech@Chambons.Rdata")
+#load("Drac@Sautet.Rdata")
+library(tidyverse)
+library(tidyselect)
+library(lubridate)
+library(R2jags)
+library(verification)
+library(GGally)
+```
+
+Suite à la thèse de Marie Courbariaux, je dispose des données journalières de températures fournies par EDF-DTG aux stations suivantes:
+
+- l' Ain à Vouglans, 
+
+- le Buech à Chambons,
+
+- le Drac à Sautet.
+
+Je propose de travailler dans toute la suite sur l'Ain à Vouglans, mais les programmes développés sont directement transposables aux deux autres stations. Nous disposons de l'historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que des $50$ membres du Centre Européen de Prévision pour les années 2005 à 2008 (4ans avec échéance de 1 à 7 jours) puis de 2O11 à 1015 (5 ans pour des prévisions jusqu'à une échéance de 9 jours) dans le *data.frame dtout*.
+
+
+```{r}
+dhisto %>% glimpse
+range(dhisto$Date)
+dtout %>% head()
+dtout %>% group_by(Year) %>% summarize(MaxEch=max(Echeance), counts=n())
+```
+
+## Analyse climatologique
+
+On peut illustrer les fluctuations saisonnières des températures journalières au cours de l'année:
+
+```{r}
+dhisto %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T, color = an)) + geom_line(alpha=0.5)
+horsain = ymd("2003-10-15")
+```
+
+Ceci met en évidence un comportement très sûrement aberrant en date du 2003-10-15, horsain que l'on enlève
+```{r}
+dhisto %>% filter(Date!= horsain) %>% mutate(an= as_factor(Year)) %>% ggplot(aes(x = Calendaire, y= T)) + geom_point(aes( color = an),alpha=0.5, shape ='.', show.legend = FALSE)+geom_smooth()+labs(x='Jours Calendaires', y='Températures', title="Climatologie à Vouglans")
+```
+
+On va alors construire une température moyenne de réference et son écart-type associé, éventuellement lissés pour chaque jour calendaire de l'année. Pour construire ces estimateurs périodiques, on *régresse* sur une base des 4 premières harmoniques la température interannuelle moyenne et le logarithme de l'écart-type journalier de la température. 
+
+```{r}
+dhisto %>% filter(Date!= horsain, Calendaire != 366) %>% mutate(an= as_factor(Year)) %>% group_by(Calendaire) %>% summarize (T_moy_ref= mean(T),T_std_ref= var(T)^0.5 ) -> T_ref
+
+modlin<-lm(T_moy_ref~ 1+ sin(2*pi*Calendaire/365)+                        cos(2*pi*Calendaire/365)+
+          sin(4*pi*Calendaire/365) +
+          cos(4*pi*Calendaire/365)+
+          sin(6*pi*Calendaire/365) +
+          cos(6*pi*Calendaire/365)+
+          sin(8*pi*Calendaire/365)+
+          cos(8*pi*Calendaire/365), data=T_ref
+          )
+modlinStd <-lm(log(T_std_ref)~ 1+ sin(2*pi*Calendaire/365)+                        cos(2*pi*Calendaire/365)+
+          sin(4*pi*Calendaire/365) +
+          cos(4*pi*Calendaire/365)+
+          sin(6*pi*Calendaire/365) +
+          cos(6*pi*Calendaire/365)+
+          sin(8*pi*Calendaire/365)+
+          cos(8*pi*Calendaire/365), data=T_ref
+          )
+
+T_ref %>% mutate(T_moy_ref_lis=modlin$fitted.values,
+                 T_std_ref_lis=exp(modlinStd$fitted.values) )-> T_ref
+T_ref%>% 
+  ggplot(aes(x=Calendaire))+geom_line(aes(y=T_moy_ref_lis)) + geom_point(aes(y=T_moy_ref))+labs(caption="Moyenne calendaire (référence climatologique)")
+T_ref %>%  
+  ggplot(aes(x=Calendaire))+geom_line(aes(y=T_std_ref_lis)) +    geom_point(aes(y=T_std_ref))+labs(caption="Ecart-Type calendaire (référence climatologique) ")
+```
+
+
+## Analyse descriptive de l'ensemble du centre européen de prévision
+
+L'analyse climatologique précédente permet de centrer et réduire les températures pour travailler en *anomalies* journalières.
+Ces anomalies sans dimension sont alors considérées comme gaussiennes, marginalement $N(0,1)$. On va laisser tomber les membres individuels pour en conserver les statistiques exhaustives, moyenne et variance empiriques dans le dataframe de travail *d*.
+Construisons d'abord une base de données (en ajoutant la climatologie).
+```{r}
+dtout %>%  mutate(Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
+                  V2=apply(dplyr::select(.,starts_with("Run")),1,var)) %>%
+  dplyr::select(-starts_with("Run")) ->d
+```
+
+Les deux figures suivantes illustrent le *spaghetti-plot* des membres de l' ensemble du CEP à 7 jours puis la gamme à deux écart-types autour de la moyenne d'ensemble sur la période de mars à juin 2006.
+
+```{r}
+dtout%>% filter(Year==2006, Month %in% c(3,4,5,6), Echeance ==7) %>% 
+  dplyr::select(Date,Obs, starts_with("Run")) %>% gather( key, value, -Date,-Obs ) %>% ggplot(aes(x=Date, color=key)) +geom_path(aes(y=value))+ geom_path(aes(y=Obs))+geom_point(aes(y=Obs),shape=21,fill="red", color='black')+guides(color = FALSE) + labs(caption = "Spaghetti des 50 membres de l' ensemble du CEP à 7 jours \n Points en rouge: températures journalières observées ")
+ 
+d %>% filter(Year==2006, Month %in% c(3,4,5,6), Echeance ==7) %>% ggplot(aes(x=Date)) +
+ geom_ribbon(aes(ymin=Xbar-2*sqrt(V2), ymax=Xbar+2*sqrt(V2)), fill="lightblue")+
+  geom_ribbon(aes(ymin=Xbar-1*sqrt(V2), ymax=Xbar+1*sqrt(V2)), fill="lightgrey")+ geom_path(aes(y=Obs))+geom_point(aes(y=Obs),shape=21,fill="red")+geom_path(aes(y=Xbar),col='blue')+ labs(caption = "Prédiction et intervalles de prévision à 95% \n en bleu: moyenne d' ensemble du CEP à 7 jours \n en rouge: températures journalières observées ")
+```
+
+On peut chercher à verifier la bonne calibration vis à vis des quantiles normaux.
+```{r}
+qnorm(1-0.1/2)
+d %>% mutate(depasse10=(abs(Obs-Xbar)>qnorm(1-0.1/2)*V2^0.5),
+             depasse20=(abs(Obs-Xbar)>qnorm(1-0.2/2)*V2^0.5),
+             depasse30=(abs(Obs-Xbar)>qnorm(1-0.3/2)*V2^0.5),
+             depasse40=(abs(Obs-Xbar)>qnorm(1-0.4/2)*V2^0.5),
+             depasse50=(abs(Obs-Xbar)>qnorm(1-0.5/2)*V2^0.5)) %>%
+  group_by(Echeance) %>% summarise(BiaisRelatif= round(mean(Obs-Xbar,na.rm=T)/(var(Obs-Xbar,na.rm=T)^.5),dig=2),
+                                   P10=round(mean(depasse10,na.rm=T),dig=2), 
+                                   P20= round(mean(depasse20,na.rm=T),dig=2),
+                                   P30= round(mean(depasse30,na.rm=T),dig=2),
+                                   P40= round(mean(depasse40,na.rm=T),dig=2),
+                                   P50= round(mean(depasse50,na.rm=T),dig=2)) 
+```
+
+On voit que le phénomène naturel varie plus que la loi normale prédictive des membres ne le laisserait penser : à toutes les échéances, l'ensemble est biaisé et surconfiant; l'ensemble n'est pas prédictivement calibré.
+
+### Relation entre moyenne de l'ensemble et température observée
+
+ Représentons en premier lieu le lien entre température observée et température moyenne prévue à diverses échéances (après centrage par la moyenne climatologique calendaire et réduction par l'écart-type climatologique calendaire  ) 
+
+```{r}
+ d %>% left_join(T_ref %>% dplyr::select(-T_std_ref,-T_moy_ref)) ->d
+ d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis,color=as.factor(Month)) )+geom_point()+geom_abline(slope=1,intercept=0) +facet_wrap(~Echeance)+labs(x="Anomalie de température", y="Anomalie de prévision", color="Mois")
+
+```
+
+Pour la moyenne d'ensemble, on constate que le biais et la dispersion vis à vis de la cible augmentent avec l'échéance, comme on s'y attend.
+```{r}
+d %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% group_by(Echeance) %>% summarise(biais=mean(x-y, na.rm=T), variance=var(x-y, na.rm=T), sce=mean((x-y)^2, na.rm=T))
+```
+Pour une échéance donnée, il y a également des fluctuations selon le mois considéré, mais ces différences restent relativement raisonnables. A titre d'exemple, faisons le calcul pour une échéance de 4 jours:
+```{r}
+d %>% filter(Echeance ==4) %>% mutate(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=(Xbar-T_moy_ref_lis)/T_std_ref_lis) %>% 
+  group_by(Month) %>% summarise(biais=mean(x-y, na.rm=T), variance=var(x-y, na.rm=T),sce=mean((x-y)^2, na.rm=T))
+```
+
+### Relation entre variance de l'ensemble et température observée
+
+Par contre, la variance inter-membre ne semble guère reliée à la température observée
+```{r}
+d %>% ggplot(aes(x=(Obs-T_moy_ref_lis)/T_std_ref_lis,y=log(V2/(T_std_ref_lis^2)),color=as.factor(Month)) )+geom_point()+facet_wrap(~Echeance)+labs(x="anomalie de température", y="Variance relative (enLog)", color="Mois")
+
+```
+
+Comme le montre la figure précédente, la valeur moyenne (géométrique) de la variance inter-membre augmente avec l'échéance jusqu'à atteindre 42% de la variance climatologique à l'échéance 9 jours, comme on s'y attend, mais pas la dispersion de son logarithme, qui, au contraire, diminue .
+
+```{r}
+d %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Echeance) %>% summarise(moygeomvariance=exp(mean(y, na.rm=T)), VarLogVariance=var(y, na.rm=T))
+```
+
+Là encore, le mois de l'année ne semble guère influent vis à vis de ces caractéristiques, voir par exemple le tableau pour l'échéance à quatre jours.
+
+```{r}
+d %>% filter(Echeance ==4) %>% mutate(y=log(V2/(T_std_ref_lis^2))) %>% group_by(Month) %>% summarise(moygeomvariance=exp(mean(y, na.rm=T)), VarLogVariance=var(y, na.rm=T))
+```
+
+
+### Relation entre variance de l'ensemble et écart de la température observée à la moyenne d'ensemble
+
+On observe enfin un lien de l'écart entre observation et moyenne d'ensemble à la variabilité inter-membre. La figure ci-après illustre cette liaison (dans l'échelle des écart-types relatifs). Je reste pour le moment sans explication en ce qui concerne la valeur de la pente, proche de $1$. 
+
+```{r}
+d %>%  mutate(x=(V2/(T_std_ref_lis^2)),y=((Obs-Xbar)/T_std_ref_lis)^2) %>% 
+ggplot(aes(x=(x)^0.5,y=(y)^0.5))+geom_point(aes( color=as.factor(Month)))+geom_smooth(se=0, color='black')+geom_abline(intercept=0, slope=1, color='white')+facet_wrap(~Echeance)+labs(y="écart absolu prévision-temperature normalisé", x="std relatif", color="Mois")
+```
+Les méthodes dites de post-traitement se servent de ce lien, même s'il s'avère assez flou, pour construire un modèle de prévision probabiliste reliant les statistiques résumées $\bar{X}_t, V_t^2$ de l'ensemble et l'observation cible $\theta_t$.
+
+# Le challenge
+
+## Objectifs
+
+L'objectif de ce travail est:
+
+  * d'utiliser la méthode cohérente du BFS pour construire une prévision probabiliste à partir du modèle échangeable normal à deux pivots,
+
+  * de montrer ses performances sur les données de températures de Vouglans, à diverses échéances. 
+  
+  * de comparer ses performances à celles des méthodes courantes EMOS et BMA, par exemple.
+  
+  * de montrer comment intégrer dans le même schéma les informations issues d'autres systèmes d'ensembles.
+  
+## Les performances à battre
+
+  La figure ci-après annonce l'objectif à battre en terme de CRPS par rapport à la méthode d'ensemble du CEP.
+  
+
+```{r}
+label<-data.frame(
+  Echeance=c(8,5),
+  CRPS= c(2.05,1.1),
+  label=c("Climatologie","CEP")
+)
+d %>% filter(Year>2011) %>% group_by(Echeance) %>% mutate(crps_ens=crps(obs=Obs,pred = data.frame(Xbar,V2^0.5, na.rm=T))$crps,
+                                    crps_clim=crps(obs=Obs,pred = data.frame(T_moy_ref_lis,T_std_ref_lis, na.rm=T))$crps) %>% summarize(CRPS_ens=mean(crps_ens,na.rm=T),CRPS_clim=mean(crps_clim,na.rm=T)) %>% 
+  ggplot(aes(x=Echeance))+geom_line(aes(y=CRPS_clim),color='red')+geom_line(aes(y=CRPS_ens))+geom_point(aes(y=CRPS_clim),color='red')+geom_point(aes(y=CRPS_ens))+labs(y="CRPS")+geom_label(data=label,aes(y=CRPS, label=label))
+```
+
+On cherchera également à vérifier la calibration, par exemple en testant le caractère uniforme de leur *probability integral transforms*.
+```{r}
+d %>% filter(Year>2011) %>%  mutate(pit_ens=crps(obs=Obs,pred = data.frame(Xbar,V2^0.5, na.rm=T))$pit,
+                                    pit_clim=crps(obs=Obs,pred = data.frame(T_moy_ref_lis,T_std_ref_lis, na.rm=T))$pit) %>%
+  ggplot()+geom_histogram(mapping=aes(x=pit_clim),stat="density", color='red')+
+  geom_histogram(mapping=aes(x=pit_ens),stat="density",position = "dodge", color="blue", alpha=0.3)+geom_hline(yintercept = 1)+facet_wrap(~Echeance)+labs(x="Probability Integral Transform")
+```
+
+## Diviser l'échantillon en apprentissage+validation
+
+Pour tester la performance des diverses méthodes, on réalisera l'inférence sur un échantillon d'apprentissage (par exemple 2005-2008) et on validera sur l'échantillon restant (par exemple 2011-2015)
+
+```{r}
+d %>% filter(Year < 2010, !is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+   filter(!is.na(theta),
+          !is.na(xbar),
+          !is.na(v2)) -> 
+  learning_sample
+d %>% filter(Year > 2010 ,!is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+ filter(!is.na(theta),
+       !is.na(xbar),
+       !is.na(v2)) -> 
+  validation_sample
+```
+
+
+# Modèles d'ensemble
+
+## Modèle Gamma-Normal à deux pivots
+
+Rappelons la suggestion de Jacques dans son document *EnsembleSaison.*
+Les membres s'appuient sur deux pivots latents $Z_{1t}$ et $Z_{2t}$, de telle sorte que le modèle échangeable s'écrit:
+
+$${X_{ts}} = \alpha  + \beta {Z_{1t}} + \lambda \sigma {Z_{2t}}^{ - O.5}{\varepsilon _{ts}}$$
+
+où $\varepsilon _{ts}\sim N(0,1)$ tandis que $\sigma$ peut être pris égal à $1$.
+Les pivots latents sont munis de priors
+$$\begin{gathered}
+  {Z_{2,t}} \sim Gamma(g,1) \hfill \\
+  {Z_{1t}}|{Z_{2t}} \sim N(0,{\sigma ^2}{Z_{2t}}^{ - 1}) \hfill \\ 
+\end{gathered}$$
+
+
+Travaillant avec les statistiques exhausives, on écrira
+$$\begin{gathered}
+  {{\bar X}_t} \sim N(\alpha  + \beta {Z_{1t}},\frac{{{\lambda ^2}{\sigma ^2}}}{{S{Z_{2t}}}}) \hfill \\
+  \sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}}  \sim \frac{{{\lambda ^2}{\sigma ^2}}}{{{Z_{2t}}}}{\chi ^2}(S - 1) \hfill \\ 
+\end{gathered}$$
+
+
+
+Soit encore, en posant $V_{t}^{2}=\frac{{\sum\limits_{s = 1}^S {{{({X_{ts}} - {{\bar X}_t})}^2}} }}{{S - 1}}$, le modèle d'échantillonnage à $t$, par orthogonalité des deux statistiques exhaustives moyenne et variances empiriques, se résume par les deux équations:
+$$\begin{gathered}
+  {{\bar X}_t} \sim N(\alpha  + \beta {Z_{1t}},\frac{{{\lambda ^2}{\sigma ^2}}}{{S{Z_{2t}}}}) \hfill \\
+  {V_{t}^{2}} \sim Gamma\left( {\frac{{S - 1}}{2},\frac{{{Z_{2t}}(S - 1)}}{{2{\lambda ^2}{\sigma ^2}}}} \right) \hfill \\ 
+\end{gathered}$$
+
+L'inférence des coefficients $\alpha ,\beta ,\lambda , g$ sera menée sur l' échantillon d'apprentissage.
+Prenons par exemple l'écheance à 4 jours des années 2005-2008.
+
+```{r}
+learning_sample  %>% filter( Echeance == 4) %>%
+                   dplyr::select(theta,xbar,v2) -> apprentissage
+```
+
+On procède à l'estimation bayésienne de $\alpha ,\beta ,\lambda , g$ grâce au logiciel d'inférence bayésienne *Jags*. (A noter qu'on pourrait également utiliser STAN.)
+
+```{r}
+model_string <- "
+model{
+a<-(S-1)/2
+for (t in 1:N){
+m[t] <- alpha+beta*Z1[t]
+preci[t]<- Z2[t]/(lambda2)
+xbar[t] ~ dnorm(m[t], preci[t])
+b[t]<-preci[t]*a
+v2[t] ~ dgamma(a,b[t])
+# latentes
+Z2[t] ~ dgamma(g,1)
+Z1[t] ~ dnorm(0, 1)
+}
+alpha ~ dunif(-10,10)
+beta ~ dunif(0,10)
+lambda2 ~ dunif(0,10)
+g ~ dunif(0.5,10)
+}
+"
+params=c("alpha","beta","lambda2","g")
+data <- list(xbar=apprentissage$xbar,
+             v2=apprentissage$v2,
+             N=length(apprentissage$xbar),
+             S=50)
+temp<-jags(data = data, model.file = textConnection(model_string),
+           parameters.to.save = params,n.chains = 3,
+           n.burnin = 500,n.iter = 1000)
+```
+
+
+```{r}
+temp$BUGSoutput$sims.matrix %>% 
+  as.data.frame() %>% 
+  dplyr::select(alpha,beta,lambda2,g) ->alphabetalambda2g
+  alphabetalambda2g %>% 
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5) +
+  facet_grid(param~.,scales = "free") 
+
+```
+
+
+L'intercept $\alpha$ est possiblement nul, la pente $\beta$ restant inférieure à $1$.
+La connaissance a posteriori de $g$ est assez incertaine; $\lambda^2$ et $g$ sont fortement corrélés.
+
+```{r}
+ggpairs(data = alphabetalambda2g)
+
+```
+
+```{r}
+knitr::kable(rbind(mean=apply(X = alphabetalambda2g,2,mean),std=apply(X = alphabetalambda2g,2,var)^0.5,apply(X = alphabetalambda2g,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+knitr::kable(cor(alphabetalambda2g),dig=3)
+```
+
+## Analyse marginale du modèle à deux pivots
+
+La vraisemblance à $t$ s'écrit:
+$$\begin{gathered}
+  {L_t} = [{{\bar X}_t},{V_t}^2|{Z_{1t}},{Z_2}] \hfill \\
+  {L_t} \propto {Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}S}}{{2{\lambda ^2}}}\left\{ {{{\left( {{{\bar X}_t} - \alpha  - \beta {Z_{1t}}} \right)}^2}} \right\} \times {Z_{2t}}^{\frac{S}{2} - \frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{{2{\lambda ^2}}}\left\{ {\left( {S - 1} \right){V_t}^2} \right\} \hfill \\ 
+\end{gathered}$$
+
+On va travailler comme Krzysztofowicz en négligeant les incertitudes des hyper-paramètres du modèle marginal. 
+
+```{r}
+alpha<-mean(alphabetalambda2g[,"alpha"])
+beta<-mean(alphabetalambda2g[,"beta"])
+lambda2<-mean(alphabetalambda2g[,"lambda2"])
+g<-mean(alphabetalambda2g[,"g"])
+S<-50
+Repet <-10000
+data.frame(Z2=rgamma(Repet,g,1), Z1=rnorm(Repet)) %>% 
+  mutate(xbar=alpha+beta*Z1+sqrt(lambda2/Z2/S)*rnorm(Repet),
+  v2=lambda2/Z2/(S-1)*rchisq(Repet,df=S-1)) %>% filter(v2<2) %>% 
+  dplyr::select(xbar,v2) %>% gather(key,value) %>% ggplot(aes(x=value,color=key))+
+  geom_histogram(data= apprentissage %>% dplyr::select(xbar,v2) %>% filter(v2<2) %>%  gather(key,value), stat = "density")+
+  geom_freqpoly(stat = "density", color='black')+facet_wrap(~key,scales="free")
+```
+Sur cette comparaison estimation empirique et modèle, on voit que les lois marginales se calent raisonnablement bien avec notre modèle gamma-normal échangeable, quoique que nous n'ayons pas tenu compte des incertitudes relatives aux hyper-paramètres ($\alpha,\beta, \gamma^2, g$) du modèle marginal.
+
+Avec ce modèle, nous disposons d'une loi explicite pour les marginales (voir annexe)
+
+* $\bar{X}$ est telle que : $\frac{{\bar X - \alpha }}{{\sqrt {{\beta ^2} + {\lambda ^2}{S^{ - 1}}} }}\sqrt{g}$ est une *Student* unitaire à $2\times g$ degrés de liberté;
+
+* $\frac{{2{\lambda ^2}}}{{2{\lambda ^2} + \sum\limits_{s = 1}^S {{{({X_{t,s}} - {{\bar X}_t})}^2}} }}$ suit une loi *Beta*$(g,\frac{S-1}{2})$.
+
+On voit d'ailleurs sur le graphe suivant le même ajustement que sur le précédent, mais sans passer par les tirages dans les latentes.
+```{r}
+alpha<-mean(alphabetalambda2g[,"alpha"])
+beta<-mean(alphabetalambda2g[,"beta"])
+lambda2<-mean(alphabetalambda2g[,"lambda2"])
+g<-mean(alphabetalambda2g[,"g"])
+S<-50
+Repet <-5000
+data.frame(xbar=alpha+((beta*beta+lambda2/S)^{+0.5})*rt(Repet,df = 2*g),#/(g^{0.5}),
+           bb=rbeta(Repet,shape1 = g, shape2 = (S-1)/2)) %>% 
+  mutate(v2= ((2*lambda2/bb)-2*lambda2)/(S-1) )%>% filter(v2<2) %>% 
+  dplyr::select(xbar,v2) %>% gather(key,value) %>% ggplot(aes(x=value,color=key))+
+  geom_histogram(data= apprentissage %>% dplyr::select(xbar,v2) %>% filter(v2<2) %>%  gather(key,value), stat = "density")+
+  geom_freqpoly(stat = "density", color='black')+facet_wrap(~key,scales="free")
+```
+## Analyse préquentielle du modèle à deux pivots
+
+Connaissant les lois marginales de $\bar{x}$ et $v^2$, on peut réaliser une transformation *Normal Quantile Transform*. Commençons par $\bar{x}$ qui est Student.
+
+```{r}
+apprentissage %>% mutate(QNT= qnorm(pt((xbar-alpha)/(beta*beta+lambda2/S)^{0.5},df=2*g))) %>% 
+  ggplot(aes(x=theta, y=QNT))+
+  geom_point()+geom_smooth(method='lm')+
+  geom_abline(slope=1,intercept=0, color="white")
+```
+
+
+On peut réaliser un diagramme par paires sur les QNT($\bar{x}$),QNT($v^2$) et $\theta$. Ce diagramme confirme la bonne liaison entre QNT($\bar{x}$) et $\theta$ (un coefficient de corrélation $\rho=0.903$ pour l'encapsulage binormal de $\bar{x}$ et $\theta$ ) tandis que, à première vue, QNT($v^2$) ne semble pas du tout corrélé aux deux autres.
+
+```{r}
+apprentissage %>% 
+      mutate(QNT= qnorm(pt((xbar-alpha)/(beta*beta+lambda2/S)^{0.5},df=2*g)),
+             betav2=2*lambda2/(2*lambda2+(S-1)*v2),
+             QNT_v2= qnorm(pbeta(betav2,shape1 = g, shape2 = (S-1)/2))) %>% 
+      dplyr::select(QNT,QNT_v2, theta) %>%  ggpairs()
+
+apprentissage %>% 
+      mutate(QNT= qnorm(pt((xbar-alpha)/(beta*beta+lambda2/S)^{0.5},df=2*g)),
+             betav2=2*lambda2/(2*lambda2+(S-1)*v2),
+             QNT_v2= qnorm(pbeta(betav2,shape1 = g, shape2 = (S-1)/2)),
+             v2_cat = forcats::fct_explicit_na(cut(v2, breaks = quantile(v2, probs = seq(0, 1, 0.05))))) %>% 
+          dplyr::select(QNT,QNT_v2, theta,v2_cat) %>% group_by(v2_cat) %>%           summarize(cor=cor(QNT,theta), counts=n())
+
+apprentissage %>% 
+      mutate(QNT= qnorm(pt((xbar-alpha)/(beta*beta+lambda2/S)^{0.5},df=2*g)),
+             betav2=2*lambda2/(2*lambda2+(S-1)*v2),
+             v2_cat = cut(v2, breaks = quantile(v2, probs = seq(0, 1, length.out = 100)),labels=FALSE))  %>% 
+  group_by(v2_cat) %>% summarize(cor=cor(QNT,theta),variance=mean(v2))  -> corv2empiric
+corv2empiric %>% ggplot(aes(x=log(variance),y=logit(cor)))+geom_line()+geom_smooth()
+```
+
+ Or je sais par l'analyse exploratoire que la proximité entre $\theta$ et $\bar{x}$ est liée à $v^2$. Je cherche donc à proposer un modèle d'encapsulage binormal où $\rho(v^2)$, le coefficient de corrélation entre $\theta$ et QNT($\bar{x}$), décroîtrait avec $v^2$.
+ Par exemple: 
+ 
+ $$ - 2\log \left[ {\theta ,QNT(\bar x)|{v^2}} \right] \propto \log (1 - \rho {({v^2})^2}) + \left( {\frac{{{\theta ^2} + QNT{{(\bar x)}^2} - 2\rho ({v^2})\theta QNT(\bar x)}}{{1 - \rho {{({v^2})}^2}}}} \right)$$
+ avec $$logit(\rho)=a+b\times log(v^2)+ c\times log(v^2)^2$$
+ 
+ On procède avec Jags, à l'estimation bayésienne de ce modèle
+
+```{r}
+model_string <- "
+model{
+for (t in 1:N){
+logit(ro[t]) <- aa+bb*log(v2[t])+cc*log(v2[t])*log(v2[t])
+m[t]=ro[t]*theta[t]
+preci[t]<- 1/(1-ro[t]*ro[t])
+QNT[t] ~ dnorm(m[t], preci[t])
+}
+aa ~ dunif(-10,10)
+bb ~ dunif(-10,10)
+cc ~ dunif(-10,10)
+}
+"
+params=c("aa","bb","cc")
+data <- list(QNT=qnorm(pt((apprentissage$xbar-alpha)/(beta*beta+lambda2/S)^{0.5},df=2*g)),
+             v2=apprentissage$v2,
+             N=length(apprentissage$xbar),
+             theta=apprentissage$theta
+             )
+temp<-jags(data = data, model.file = textConnection(model_string),
+           parameters.to.save = params,n.chains = 3,
+           n.burnin = 500,n.iter = 1000)
+```
+
+
+```{r}
+temp$BUGSoutput$sims.matrix %>% 
+  as.data.frame() %>% 
+  dplyr::select(aa,bb,cc) ->aabbcc
+
+  aabbcc %>% 
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5) +
+  facet_grid(param~.,scales = "free") 
+  
+  ggpairs(data = aabbcc)
+  
+  aa=mean(aabbcc$aa)
+  bb=mean(aabbcc$bb)
+  cc=mean(aabbcc$cc)
+  
+  apprentissage %>% dplyr::select(v2) %>%
+    mutate(lv2=log(v2), ro=exp(aa+bb*lv2+cc*lv2^2)/(1+exp(aa+bb*lv2+cc*lv2^2))) %>% 
+    ggplot(aes(x=v2,y=ro))+geom_line()
+  
+  bins= seq(min(apprentissage$v2),max(apprentissage$v2),by=0.02)
+  vv=rbind(1+0*bins,log(bins),log(bins)^2)
+  Gv=as.matrix(aabbcc)%*%vv
+  RO=exp(Gv)/(1+exp(Gv))
+  qRO=t(apply(RO,2,quantile,prob=c(0.05,0.5,0.95)))
+  colnames(qRO)= c("Q5","Q50","Q95")
+  dRO<-cbind(v2=bins,qRO)
+  dRO %>% as.data.frame() %>% ggplot(mapping=aes(x=v2))+geom_line(mapping=aes( y=Q50 ))+
+    geom_ribbon(aes(ymin=Q5, ymax=Q95), alpha = 0.3, fill="blue")+ 
+    geom_hline(yintercept = 0.903)+ylab("rho") +
+    geom_line(mapping=aes( x=variance,y=cor ),data=corv2empiric)
+```
+
+
+```{r}
+validation_sample %>% filter(Echeance==4) %>% 
+  mutate(lv2=log(v2),
+         ro=exp(aa+bb*lv2+cc*lv2^2)/(1+exp(aa+bb*lv2+cc*lv2^2)),
+         QNT=qnorm(pt((xbar-alpha)/(beta*beta+lambda2/S)^{0.5},df=2*g)),
+         mpred=ro*QNT,
+         vpred=(1-ro^2)
+         ) ->validation 
+```
+```{r}
+validation %>% mutate(crps_clim=crps(obs=theta,pred = data.frame(0*xbar,1, na.rm=T))$crps,
+              crps_ens=crps(obs=theta,pred = data.frame(xbar,v2^0.5, na.rm=T))$crps,
+              crps_krz=crps(obs=theta,pred = data.frame(mpred,vpred^0.5, na.rm=T))$crps,
+              crps_krz_fix=crps(obs=theta,pred = data.frame(0.903*QNT,(1-0.903^2)^0.5, na.rm=T))$crps
+              ) %>% group_by(Year) %>% 
+  summarize(CRPS_ens=mean(crps_ens,na.rm=T),CRPS_clim=mean(crps_clim,na.rm=T), 
+            CRPS_krz=mean(crps_krz,na.rm=T),CRPS_krz_fix=mean(crps_krz_fix,na.rm=T), 
+            counts=n(), ProbaMieux=sum(crps_krz<crps_ens)/counts)
+```
+
+On fait mieux en moyenne sur le score ignorance, mais pas systématiquement.
+
+```{r}
+validation %>% mutate(ign_clim=crps(obs=theta,pred = data.frame(0*xbar,1, na.rm=T))$ign,
+              ign_ens=crps(obs=theta,pred = data.frame(xbar,v2^0.5, na.rm=T))$ign,
+              ign_krz=crps(obs=theta,pred = data.frame(mpred,vpred^0.5, na.rm=T))$ign,
+              ign_krz_fix=crps(obs=theta,pred = data.frame(0.903*QNT,(1-0.903^2)^0.5, na.rm=T))$ign
+              ) %>% group_by(Year) %>% 
+  summarize(IGN_ens=mean(ign_ens,na.rm=T),CRPS_clim=mean(ign_clim,na.rm=T), 
+            IGN_krz=mean(ign_krz,na.rm=T),CRPS_krz_fix=mean(ign_krz_fix,na.rm=T), 
+            counts=n(), ProbaMieux=sum(ign_krz<ign_ens)/counts)
+```
+## Expression de la conditionnelle des deux variables pivots latentes
+
+La vraisemblance complète quant à elle est légèrement plus compliquée:
+$$\begin{gathered}
+  C{L_t} = [{{\bar X}_t},{V_t}^2,{Z_{1t}},{Z_2}] = [{{\bar X}_t},{V_t}^2|{Z_{1t}},{Z_{2t}}] \times [{Z_{1t}},{Z_{2t}}] \hfill \\
+  C{L_t} \propto {L_t} \times \left( {{Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{2}Z_{1t}^2} \right) \times \left( {Z_{2t}^{g - 1}\exp  - {Z_{2t}}} \right) \hfill \\ 
+\end{gathered}$$
+
+En développant:
+$$\begin{gathered}
+  C{L_t} \propto \left( {{Z_2}^{\frac{1}{2}}\exp  - \frac{{{Z_{2t}}}}{2}\left\{ {Z_{1t}^2 + \frac{{S{\beta ^2}}}{{{\lambda ^2}}}{{\left( {{Z_{1t}} - \frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)}^2}} \right\}} \right) \hfill \\
+   \times \left( {Z_{2t}^{g + \frac{S}{2} - 1}\exp  - {Z_{2t}}(1 + \frac{{\left( {S - 1} \right){V_t}^2}}{{2{\lambda ^2}}})} \right) \hfill \\ 
+\end{gathered}$$
+
+puis en regroupant:
+
+$$\begin{gathered}
+  Z_{1t}^2 + \frac{{S{\beta ^2}}}{{{\lambda ^2}}}{\left( {{Z_{1t}} - \frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)^2} = \left( {\frac{{S{\beta ^2} + {\lambda ^2}}}{{{\lambda ^2}}}} \right){\left( {Z_{1t}^{} - \left( {\frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)\frac{{S{\beta ^2}}}{{S{\beta ^2} + {\lambda ^2}}}} \right)^2} \hfill \\
+   + \left\{ {\left( {\frac{{S{{\left( {{{\bar X}_t} - \alpha } \right)}^2}}}{{S{\beta ^2} + {\lambda ^2}}}} \right)} \right\} \hfill \\ 
+\end{gathered}$$
+
+la conjugaison adhoc permet d'obtenir les conditionnelles a posteriori
+
+$$\begin{gathered}
+  {Z_{2t}}|{{\bar X}_t},{V_t}^2 \sim Gamma(g + \frac{S}{2},1 + \frac{{\left( {S - 1} \right){V_t}^2}}{{2{\lambda ^2}}} + \left( {\frac{{S{{\left( {{{\bar X}_t} - \alpha } \right)}^2}}}{{2\left( {S{\beta ^2} + {\lambda ^2}} \right)}}} \right)) \hfill \\
+  {Z_{1t}}|{Z_{2t}},{{\bar X}_t},{V_t}^2 \sim N(\left( {\frac{{{{\bar X}_t} - \alpha }}{\beta }} \right)\frac{{S{\beta ^2}}}{{S{\beta ^2} + {\lambda ^2}}},{\left\{ {\left( {\frac{{S{\beta ^2} + {\lambda ^2}}}{{{\lambda ^2}}}} \right){Z_{2t}}} \right\}^{ - 1}}) \hfill \\ 
+\end{gathered}$$
+
+
+#### Nota:
+Je pense qu' il y a une erreur typographique dans le papier de Jacques en page 8 pour le calcul de l'espérance de $Z_1$.
+
+### Apprentissage d'un lien des deux variables pivots latentes avec la variable cible
+
+Pour chaque situation de la base  d'apprentissage, nous générons un $Z_1(t)$ que nous mettons en regard avec la cible.
+```{r}
+N<-dim(apprentissage)[1]
+apprentissage %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
+m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
+precision_Z1=(S*beta^2+lambda2)/lambda2, 
+Z2=rgamma(N,a_Z2,b_Z2),
+Z1=rnorm(N,m_Z1,(precision_Z1*Z2)^-0.5)) %>% ggplot(aes(x=theta, y=Z1))+
+  geom_point()+geom_smooth(method='lm')+geom_abline(slope=1,intercept=0, color="white")
+```
+
+La suggestion de Jacques est de repasser en marginale et de travailler avec les QNT:
+
+* la cible qui a été centrée réduite est déjà N(0,1).
+
+* $Z_1$ est marginalement Student à $2g$ degrés de liberté. Quant à $g^{0.5} \times Z_1$, il est Student unitaire à $2g$ degrés de liberté.
+
+```{r}
+apprentissage %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
+m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
+precision_Z1=(S*beta^2+lambda2)/lambda2, 
+Z2=rgamma(N,a_Z2,b_Z2),
+Z1=rnorm(N,m_Z1,(precision_Z1*Z2)^-0.5),
+QNT_Z1= qnorm(pt(sqrt(g)*Z1,df=2*g))) %>% ggplot(aes(x=theta, y=QNT_Z1))+
+  geom_point()+geom_smooth(method='lm')+geom_abline(slope=1,intercept=0, color="white")
+```
+
+```{r}
+apprentissage %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
+m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
+precision_Z1=(S*beta^2+lambda2)/lambda2, 
+Z2=rgamma(N,a_Z2,b_Z2),
+Z1=rnorm(N,m_Z1,(precision_Z1*Z2)^-0.5),
+QNT_Z1= qnorm(pt(sqrt(g)*Z1,df=2*g))) -> apprentissage
+summary( lm(QNT_Z1~theta-1, data=apprentissage))
+ro=lm(QNT_Z1~theta-1, data=apprentissage)$coef
+```
+
+Sur l'échantillon d'apprentissage, on trouve un coefficient de corrélation $\hat{\rho}=0.8803$ entre le QNT de la cible et le QNT d'une valeur tirée au hasard dans la loi conditionnelle du premier pivot sachant les deux statistiques résumant l'ensemble échangeable.
+
+## Analyse prédictive grâce au modèle à deux pivots
+
+Considérons maintenant l'échantillon de validation ou l'on va appliquer le calcul prédictif:
+
+$[\theta|X]=\int_{QNT} [\theta|QNT] \times [QNT|X] \times dQNT$
+
+Et si l'on dispose d'un prior informatif $[\theta]$ pour la cible:
+
+$$[\theta|X]=\int_{QNT} \frac{[QNT|\theta]\times [\theta]}{[QNT]} \times [QNT|X] \times dQNT$$
+Si on utilise la conjugaison normale avec un prior $N(m_t,s_t^2)$ pour $[\theta_t]$,
+$[\theta|QNT]$ est $N(m'_t,s'_t^2)$ avec
+
+* $\frac{1}{s'^2}=\frac{1}{s^2}+\frac{\rho^2}{1-\rho^2}$ 
+
+* $\frac{m'}{s'^2}=\frac{m}{s^2}+\frac{QNT}{\rho}\frac{\rho^2}{1-\rho^2}$
+
+pour $m=0, s=1$, c'est à dire pour un prior climatologique pour produire une prévision probabiliste calibrée, on retrouve les résultats de la régression $[\theta|QNT]$ est $N(\rho \times QNT,1-\rho^2)$
+
+```{r}
+validation_sample %>% filter(Echeance==4) %>% mutate(a_Z2=g+S/2,                       b_Z2=1+(S-1)*v2/2/lambda2+S*((xbar-alpha)^2)/2/(S*beta^2+lambda2),
+m_Z1=   (xbar-alpha)*S*beta /(S*beta^2+lambda2) ,
+precision_Z1=(S*beta^2+lambda2)/lambda2) ->validation 
+```
+```{r}
+GenereMeanPred=function(a_Z2,b_Z2,m_Z1,precision_Z1){
+  Rep=100
+  z2=rgamma(Rep,a_Z2,b_Z2)
+  z1=rnorm(Rep,m_Z1,(precision_Z1*z2)^-0.5)
+  QNT= qnorm(pt(sqrt(g)*z1,df=2*g))
+  mpred=ro*mean(QNT)
+}
+GenereVarPred=function(a_Z2,b_Z2,m_Z1,precision_Z1){
+  Rep=100
+  z2=rgamma(Rep,a_Z2,b_Z2)
+  z1=rnorm(Rep,m_Z1,(precision_Z1*z2)^-0.5)
+  QNT= qnorm(pt(sqrt(g)*z1,df=2*g))
+  vpred=(1-ro^2) +ro*ro*var(QNT)
+}
+validation %>% group_by(Date) %>% 
+  mutate(mpred=GenereMeanPred(a_Z2,b_Z2,m_Z1,precision_Z1),
+         vpred=GenereVarPred(a_Z2,b_Z2,m_Z1,precision_Z1)) %>%
+  ungroup() %>% mutate(crps_clim=crps(obs=theta,pred = data.frame(0*xbar,1, na.rm=T))$crps,
+              crps_ens=crps(obs=theta,pred = data.frame(xbar,v2^0.5, na.rm=T))$crps,
+              crps_krz=crps(obs=theta,pred = data.frame(mpred,vpred^0.5, na.rm=T))$crps
+              ) %>% group_by(Year) %>% 
+  summarize(CRPS_ens=mean(crps_ens,na.rm=T),CRPS_clim=mean(crps_clim,na.rm=T), 
+            CRPS_krz=mean(crps_krz,na.rm=T), counts=n())
+```
+
+
+
+## EMOS
+
+Je veux comparer à ce modèle bayésien au calcul traditionnel EMOS qui brutalement impose une loi conditionnelle $[\theta|\bar{x},v^2]_{EMOS}$, sans se préoccuper de produire une structure cohérente de loi conjointe de toutes les variables en jeu.
+
+$$ \theta\vert (v^2,\bar{x}) \sim N(a\times \bar{x} +b , c+ d\times v^2) 
+ $$
+
+ 
+L'inférence des coefficients $a,b,c,d,g$) sera menée sur le même échantillon (Ici pris par exemple avec l'écheance à 4 jours des années 2005-2008) d'apprentissage. Ses performances seront analysées sur le même échantillon de validation. (Ici pris par exemple l'écheance à 4 jours des années 2011-2015).
+
+```{r}
+d %>% filter(Year < 2010, Echeance == 4, !is.na(Calendaire)) %>% 
+  mutate(theta=(Obs-T_moy_ref_lis)/T_std_ref_lis,
+         xbar=(Xbar-T_moy_ref_lis)/T_std_ref_lis,
+         v2=  V2/(T_std_ref_lis^2) ) %>% 
+  dplyr::select(theta,xbar,v2) %>% filter(!is.na(theta),
+                                   !is.na(xbar),
+                                   !is.na(v2)) -> 
+  learning_sample_EMOS
+```
+
+
+On va réaliser l'inférence bayésienne des coefficients $a,b,c,d$
+
+
+```{r}
+model_string_EMOS <- "
+model{
+for (i in 1:N){
+m[i] <- a*xbar[i]+b
+preci[i]<- 1/(c+d*v2[i])
+theta[i] ~ dnorm(m[i], preci[i])
+}
+a ~ dunif(-10,10)
+b ~ dunif(-10,10)
+c ~ dunif(0,10)
+d ~ dunif(0,10)
+}
+"
+params=c("a","b","c","d")
+data <- list(theta=learning_sample_EMOS$theta,
+             xbar=learning_sample_EMOS$xbar,
+             v2=learning_sample_EMOS$v2,
+             N=length(learning_sample_EMOS$theta))
+temp<-jags(data = data, model.file = textConnection(model_string_EMOS),
+           parameters.to.save = params,n.chains = 3,
+           n.burnin = 500,n.iter = 1000)
+```
+
+```{r}
+temp$BUGSoutput$sims.matrix %>% 
+  as.data.frame() %>% dplyr::select(a,b,c,d) ->abcd
+  abcd %>% gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5) +
+  facet_grid(param~.,scales = "free_x") 
+
+```
+
+Les coefficients $a,b,c$ sont assez précisément estimés sauf la valeur de $d$ qui est plus incertaine, tandis que les coefficients $c$ et $d$ sont anti-corrélés.
+
+```{r}
+knitr::kable(rbind(mean=apply(X = abcd,2,mean),std=apply(X = abcd,2,var)^0.5,apply(X = abcd,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+knitr::kable(cor(abcd),dig=3)
+```
+
+## Test de la Prediction probabiliste EMOS
+
+Sur un échantillon de validation (ici 2011-2015), on va étudier le comportement du prédicteur EMOS.
+
+```{r}
+a<-mean(abcd[,'a'])
+b<-mean(abcd[,'b'])
+c<-mean(abcd[,'c'])
+d<-mean(abcd[,'d'])
+
+validation %>% group_by(Date) %>% 
+  mutate(mpred=GenereMeanPred(a_Z2,b_Z2,m_Z1,precision_Z1),
+         vpred=GenereVarPred(a_Z2,b_Z2,m_Z1,precision_Z1)) %>%
+  ungroup() %>% mutate(m_EMOS=a*xbar+b, v2_EMOS=c+d*v2) %>% 
+  mutate(crps_clim=crps(obs=theta,pred = data.frame(0*xbar,1, na.rm=T))$crps,
+              crps_ens=crps(obs=theta,pred = data.frame(xbar,v2^0.5, na.rm=T))$crps,
+              crps_krz=crps(obs=theta,pred = data.frame(mpred,vpred^0.5, na.rm=T))$crps,
+              crps_EMOS=crps(obs=theta,pred = data.frame(m_EMOS,v2_EMOS^0.5, na.rm=T))$crps
+              ) %>% group_by(Year) %>% 
+  summarize(CRPS_clim=mean(crps_clim,na.rm=T),
+            CRPS_ens=mean(crps_ens,na.rm=T),CRPS_EMOS=mean(crps_EMOS,na.rm=T), 
+            CRPS_krz=mean(crps_krz,na.rm=T), counts=n())
+```
+
+# Conclusions
+
+## Eric toujours pas content!
+
+Les résultats numériques CRPS ne semblent hélas pas plaider en faveur du BFS, supplanté par l'ensemble brut, lui même supplanté par EMOS brutalement calé, mais cette étude préliminaire mérite  d'être poursuivie. Les pistes à explorer sont:
+
+0. Vérifier que je ne me suis pas planté dans les calculs...
+
+1. Regarder ce qui se passe à d'autres échéances que 4 jours,
+
+2. Tenter une estimation adaptative, en raffinant sur la période de l'année, et/ou l'assimilation des températures d'ensemble des jours précédents pour produire une prédictive BFS *collant* mieux à la période.
+
+3. Regarder ce qui se passe pour d'autres stations.
+
+## Extensions intéressantes
+
+On peut disposer sur ces stations d'une autre prévision d'ensemble, par exemple les analogues. Comment intégrerait on cette information additionnelle en vue d'améliorer la prédictive BFS?
+
+* au niveau du prior de $[\theta_t]$ dans l'équation 
+$$[\theta|X]=\int_{QNT_{CEP}} \frac{[QNT_{CEP}|\theta]\times [\theta_{Analogues}]}{[QNT_{CEP}]} \times [QNT_{CEP}|X] \times dQNT_{CEP}$$
+
+* ou bien, au niveau des QNT dans l'équation ?
+$$[\theta|X]=\int_{QNT_{CEP,ANA}} \frac{[QNT_{CEP},QNT_{ANA}|\theta]\times [\theta]}{[QNT_{CEP},QNT_{ANA}]} \times [QNT_{CEP},QNT_{ANA}|X] \times dQNT_{CEP} \times dQNT_{ANA}$$
+
+
+# Annexes
+
+Vérifions que les deux façons d'obtenir les lois marginales de $\bar{x}$ et $v^2$ sont équivalentes:
+
+```{r}
+g=50
+alpha=0
+beta=2
+lambda2=4
+S<-50
+Repet <-5000
+data.frame(xbar=alpha+((beta*beta+lambda2/S)^{0.5})*rt(Repet,df = 2*g),
+           bb=rbeta(Repet,shape1 = g, shape2 = (S-1)/2), nom='marges') %>% 
+  mutate(v2= ((2*lambda2/bb)-2*lambda2)/(S-1) ) %>% 
+  dplyr::select(xbar,v2,nom)->dtf1
+
+data.frame(Z2=rgamma(Repet,g,1), Z1=rnorm(Repet)) %>% 
+  mutate(xbar=alpha+beta*Z1+sqrt(lambda2/Z2/S)*rnorm(Repet),
+  v2=lambda2/Z2/(S-1)*rchisq(Repet,df=S-1), nom='latentes') %>% 
+   dplyr::select(xbar,v2,nom)->dtf2
+dtf<-rbind(dtf1,dtf2)
+
+dtf %>% gather(key,value,-nom) %>% ggplot(aes(x=value,color=nom))+
+ geom_freqpoly(stat = "density")+facet_wrap(~key,scales="free")
+
+alpha<-mean(alphabetalambda2g[,"alpha"])
+beta<-mean(alphabetalambda2g[,"beta"])
+lambda2<-mean(alphabetalambda2g[,"lambda2"])
+g<-mean(alphabetalambda2g[,"g"])
+```
+
+
+
+
+
+
+
+
