@@ -699,15 +699,22 @@ BRIERCategoriel = function(pred=matrix(c(0.5,0.2,0.3,
   pred=pred/apply(pred,1,sum)
   bs=0*(1:n)
   for (t in 1:n)  bs[t]=sum((outer(pred[t,],obs[t,],"-")^2)*W)
-}
 BS=mean(bs)
-
-conjointe= t(obs)%*%pred/n
-colnames(conjointe)=paste("pred =",1:p)
-rownames(conjointe)=paste("obs =",1:p)
-margepred=apply(conjointe,2,sum)  # notée v chez DEgroot et Feinberg
+conjointe= t(pred)%*%obs/n
+bsbis=0*(1:n)
+  for (t in 1:n)  bsbis[t]=sum((outer(pred[t,],obs[t,],"-")^2)*W)
+BSbis=mean(bsbis)
+colnames(conjointe)=paste("obs =",1:p)
+rownames(conjointe)=paste("pred =",1:p)
+margepred=apply(conjointe,1,sum)  # notée v chez DEgroot et Feinberg
 condObsSachantPred= conjointe/margepred  # notée rho chez DEgroot et Feinberg
-
+bs0=bs*0
+for (t in 1:n)  
+  { bsopartiel = condObsSachantPred*W*(outer(pred[t,],obs[t,],"-")^2)
+    #apply(condObsSachantPred*W*(outer(pred[t,],obs[t,],"-")^2),1,"sum")
+ bs0[t]<-sum(margepred*bsopartiel)}
+BS0=sum(bs0)
+}
 
 ```
 
