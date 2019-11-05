@@ -678,8 +678,38 @@ print(c(B,B1,B2),digits=3)
 
 On rappelle que la courbe ROC (Receiver Operating Caracteristic) des prévisions binaires (E,nonE) fournit les rapports de probabilité de détecter E à la probabilité de détecter nonE en fonction de divers évènements nonE. Comparer les deux évènements par leurs probabilité revient à supposer les regrets égaux. Cette remarque peu s'appliquer aussi au diagramme PIT.
 
+-------------
+```{r}
+BRIERCategoriel = function(pred=matrix(c(0.5,0.2,0.3,
+                                        0.4,0.4,0.2,
+                                        0.5,0.2,0.3,
+                                        0.1,0.4,0.5),
+                                       byrow=T,nr=4),# matrice de previsions
+               obs=matrix(c(1,0,0,
+                            0,1,0,
+                            0,0,1,
+                            0,1,0),byrow=T,nr=4),# matrice d'observations
+               W =matrix(c(1),nr=3,nc=3)# matrice de ponderation
+               ) {
+  n=dim(pred)[1]
+  p=dim(pred)[2]
+  if (((dim(obs)[1]!=n)|(dim(obs)[1]!=n))) stop ("Problème de dimensions incompatibles")
+  if (((dim(W)[1]!=p)|(dim(W)[1]!=p))) stop ("Problème de dimensions de W incompatibles")
+  if (sum(obs)!=n) stop ("l'observation doit contenir des 1 seulement")
+  pred=pred/apply(pred,1,sum)
+  bs=0*(1:n)
+  for (t in 1:n)  bs[t]=sum((outer(pred[t,],obs[t,],"-")^2)*W)
+}
+BS=mean(bs)
 
-# -------------
+conjointe= t(obs)%*%pred/n
+colnames(conjointe)=paste("pred =",1:p)
+rownames(conjointe)=paste("obs =",1:p)
+margepred=apply(conjointe,2,sum)  # notée v chez DEgroot et Feinberg
+condObsSachantPred= conjointe/margepred  # notée rho chez DEgroot et Feinberg
+
+
+```
 
 
 # Modèles échangeables d'ensemble à 1 et 2 pivôts
