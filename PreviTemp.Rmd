@@ -1,0 +1,671 @@
+---
+title: "Previtemp"
+author: "JB"
+date: "08/08/2019"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+---
+
+# Ce document .Rmd essaie de préciser par le calcul certains commentaires théoriques que je m'autorise à faire sur le document "EssaiTempNormalEch2.Rmd" d'Eric mais il commence par des remarques statistiques générales sur le domaine concerné, remarques peut être discutables (je fais confiance à Eric). Les commentaires sont illustrés par des chunks programmés par moi (dans mon état "provisoire??" de compréhension incomplète de ggplot et dplyr et des nombreux pipelines d'Eric encore peu utilisés dans ce document).  Mes chunks sont basés sur des essais de simplification surtout à la mode R classique . On va m'accuser de tergiverser au lieu de bien tidyverser sans erreurs dans la syntaxe mais je disposerai de verres de whisky-breton-versés qui me consoleront dans "l'ad(versité)" (excusez - c'est une sorte de pipeline!).
+
+# Mes commentaires portent sur plusieurs points (voir aussi la conclusion temporaire):
+
+## Mon souhait serait de faire de la statistique mathématique dans une publication. Eric dit que nous n'avons "rien valorisé en terme d'article vis à vis de la communauté d'hydrologie statistique que nous nous plaisons tant à critiquer". Certes mais faut il laisser communiquer le monde en termes statistiques "verbaux" à la mode des sempiternels "prévisions probabilistes", "distributions pseudo-prédictives", "score CRPS", le credo de la trinité de la littérature moderne en prévision? Je comprend la déception d'Eric à la vue de ses crps. Mon point de vue est que ces calculs trop globaux sont extrèmemement fallacieux. Pourtant il y a beaucoup plus à dire de la comparaison statistique même pragmatique des modèles CEP, EMOS, Echangeables-BFS.
+
+## La littérature récente de la Prévision utilise des concepts statistiques de base de façon plutôt "com. internet" en ne retenant que leurs expressions verbales pour comparaisons et choix, à défaut de choix judicieux et en oubliant leur profonde cohérence.
+
+### On nous affirme la nécessité  d'une **prévision probabiliste**. Très bien mais alors la cohérence implique que cette distribution probabiliste soit une probabilité conditionnelle §[y|z]§ en fonction de l'information Z munie (éventuellement d'une distribution marginale §[z]§) d'où la nécessaire considération de la "loi du couple §[y,z]§  et de sa conséquence obligée caractérisant la seule distribution prédictive logique --valable-- soit nécessairement: 
+
+  \[[y|z]=[y,z]/[z]=[z|y][y]/[z]\]
+
+### ce qui n'est autre que la formule de Bayes dont la prise en compte s'impose que l'on soit non bayesien ou bayesien (c'est à dire qui interprète les composants de l'équation differemment de l'interprétation fréquentiste et notamment la dite distribution a priori [y]). Les classiques cohérents devraient donc être bayesiens sans le savoir. Pour ce calcul, beaucoup d'auteurs ont utilisé le concept de "best member x(z)" et la dite predictive distribution associés calculée à partir des écarts absolus:
+
+ \[|| y-x_{Z}||\] 
+
+### Un tel calcul basé sur des erreurs brutes de prévision ne peut en aucune façon, donner même une approximation de la vraie distribution prédictive au sens probabiliste. Il y a erreur de principe et la simplicité revendiquée ne peut remplacer la rigueur. Faut il cacher ces erreurs commises par nombre d'auteurS?
+
+### Gneiting, avec nombre d'auteurs modernes nous dit:"Increased recognition of the need for uncertainty quantiﬁcation ...,allow for optimal decision making.", magnifique, puis: "What is a good probabilistic forecast?"-- demande t-il et il répond "Probabilistic forecasts aim to maximize the sharpness of the predictive distributions subject to calibration".  Certes mais on n'a jamais vu une telle formalisation mise en application dans le domaine concerné. Le plus souvent on caractèrise une méthode par un CRPS continu moyen dont les valeurs sont difficiles à interpréter, sans distinguer d'ailleurs calibration et précision. En dehors de Winkler (1996), on n'a jamais reconnu l'inadaptation du CRPS, par sa symétrie, à être utilisé comme une bonne fonction de coût en --Optimal Decision Theory-- pourtant verbalement recommandée par multiples auteurs, voir Gneiting. Eric n'échappe pas à cette critique avec des comparaisons des CRPS peu signifiantes entre méthodes dont les qualités sont en fait ailleurs. J'essaierai de montrer que des scores discrets comme les Brier peuvent être choisis pour de meilleures comparaisons.
+
+
+# Passons à quelques aspects particuliers du document Eric.
+
+## Le premier point concerne la désaisonnalisation sur le couple moyenne,variance des températures calendaires (par année) que je préfererais remplacer par une désaisonnalisation classique unique: "Tt=Tclimatique + ecart" avec var(ecart) eventuellement modulée selon la saison (hiver ou été). Le problème est que les modèles d'ensembles ont, de fait, pour objet de **mieux représenter les dispersions des prévisions** des cibles et ainsi leurs résultats pourraient être influençés par cette correction a priori qui modifie la structure aléatoire de la température historique et celle des modèles d'ensembles. (voir le chunk de l'analyse des écarts).
+
+## Cette désaisonnalisation peut retentir sur le calcul des scores. Eu égard aux difficultés de la validation des modèles de prévision par les scores CRPS, je propose d'essayer les scores discrets de BRIER symétriques et dissymétriques mis sous la forme type "Degroot et Fienberg" (voir notre note "La Statistique et les Prévisions d'Ensemble - Je t'aime moi non plus-juin 2019" corrigée par une note annexe sur les Briers - à venir). 
+
+$W(a,y)=(a-y)^{2}$
+
+### Plutôt que traiter les données en "réel" en utilisant systématiquement le CRPS, je proposerais en effet de transformer les variables continues en variables vectorielles discrètes, généralisant les Bernoullis avec k classes (exemple: y(vecteur trimensionnel)={0,1,0}) définissant des classes recouvrant le domaine de chaque variable. L'exemple k=3, utilisé ici peut être trop simpliste mais, à mon avis, illustre bien déja certaines difficultés des méthodes de post-traitements comme le CEP à l'encontre du CRPS ordinaire.
+
+## Les Briers (sous la forme Dg&F généralisée) peuvent être calculés en apprentissage sur 2005-2008 et utilisés pour la validation (versions propres et assymétriques) sur la période 2011-2015 en distinguant les années. On peut faire varier à la fois k et le sur-regret W attribué à chaque classe particulière. Cette approche, en y adjoignant les comparaisons directes de fréquences d'erreurs de prévision, nous semble plus informative, en phases d'apprentissage et validation, que les calculs globaux de CRPS dits continus, ces derniers fussent ils ou non recommandés comme des dogmes intangibles par les prévisionnistes professionnels ou theoriciens du domaine en 2019.
+
+## La modélisation marginale des ensembles constitue la première partie de la structure BFS appliquée aux ensembles échangeables que nous proposons. La seconde partie, modélisation prédictive, relie les "résumés de l'information marginale d'ensemble à la cible de prévision". Il y a aussi là un désaccord avec Eric sur les transformations NQT (à la mode Krzysztofowicz) normalisant les fonctions "résumés d'ensembles --> cible". On remarquera que la méthode CEP est un calcul approximatif direct (non BFS) des prédictives bien que dans l'application d'Eric; de plus il utilise **les mêmes statistiques d'ensembles résumantes à savoir moyennes et écart types pour les 3 méthodes d'ensemble (CEP,EMOS et échangeable-BFS)**. Ceci est très important pour la comparaison entres methodes d'ensembles --utilisant la même information résumée et peut expliquer la relative déception d'Eric. Disons seulement ici que la principale qualité d'un modèle échangeable-BFS est sa parsimonie (utile en modèles adaptatifs) et difficilement apparente dans le calcul de crps globaux.
+
+## Notre discussion porte aussi sur un point de la philosophie interprétative statistique qui soutend les chunks d'Eric consacrés au modèle échangeable. Le point de départ est l'interprétation des lois:
+
+$Z2_{t} = dgamma(.,2g,1),[Z1_{t}|Z2_{t}]=dnorm(.,0,(Z2_{t})^{-1})$  
+
+## a priori commme -- lois marginales de ces latentes-- . 
+
+## Rappelons qu'on ne peut interpréter les latentes Z1t,Z2t indépendamment du modèle des X. Les priors pour chaque t ont la même structure (localement conjuguées naturelles), certes, mais elles ne sont utiles que pour modéliser l'information des membres via la NQT et Bayes à chaque t. Ce sont les conditionnelles complètes [Z2t|cc] et [Z1t|Z2t,g,cc...] (aposteriori) des latentes considérées comme pivôts des prévisions qui importent dans la prévision (les Z marginaux ne sont pas des prédicteurs). Ce sont les vraies prédictives interprétés marginalement qui doivent intervenir et la NQT de la deuxième phase doit en tenir compte pour la normalisation. Ce n'est pas parce que les priors multiples dépendent d'un paramètre commun g (pour raison de parsimonie) qu'il faut leur donner une signification marginale ou préquentielle. Ce sont les moyennes et écart types d'ensemble --résumantes-- qui sont les seules informations marginales à considérer - voir ce qui suit)
+
+## Il est donc clair que ces latentes ne sont déterminées qu'en distributions conditionnelles à information donnée. De plus Eric ne génère (avec ses hypothèses) qu'un seul prédicteur Z tiré au sort pour chaque t de l'échantillon d'apprentissage ce qui est très peu si on veut tenir compte de l'aléa des latentes "inconnues" de façon cohérente. Le tirage au sort d'un seul prédicteur est très différent de l'utilisation systématique de statistiques résumantes **observables**.
+
+## En effet dans la deuxième phase prédictive de la BFS, Eric utilise la NQT avec ces soi-disant distributions marginales de Z1 ET Z2. En fait et de façon cohérente, et d'après Krzysztofowicz, c'est la distribution marginale de l'information X et donc les observables conditionnantes des Z (moyennes et écarts types ) qui doivent intervenir si ces latentes sont utilisées en prédictif (voir ci dessus).
+
+## Ce point de vue est justifié par la théorie de l'échangeabilité car de plus on utilise ainsi les relations entre échangeabilité et exhaustivité (voir Lauritzen 2007 - Suﬃciency, Partial Exchangeability, and Exponential Families) et les nouvelles formulations du théorème de représentation de de Finetti qui montrent que dans le conditionnement les Z peuvent être remplaçées par des statistiques exhaustives conditionnelles, dites résumantes, si le modèle d'ensemble le permet ce qui est le cas). 
+
+## L'avantage considérable est de remplacer les Z latents inobservables pat des statistiques ponctuelles observables  t à t, moyennes et écart-types d'ensemble dont **les distributions marginales sont aussi parfaitement déterminées** (par les paramètres plus g plus S) et donc justiciables d'une NQT sans difficultés. Toutes ces propriétés peuvent être adaptées aux modèles de prévision des précipitations. (j'en ai maintenant la théorie complète avec ces hypothèses pour le modèle des fuites - en cours) 
+
+## Je crois qu'il est nécessaire de suivre alors au plus près la coherence (au sens de Lindley) eu égard aux aspects plus ou moins non-paramétriques des différentes methodes "d'habillage" avec des verbalisations pseuco-statistiques de la littérature et aux difficultés de "lecture" des CRPS continus.
+
+## Les analyses illustratives qui suivent sont essentiellement des chunks inspirés de "EssaiTempNormalEch2", notebook d'Eric mais modifiés à ma fade sauce "tergi(tidy)versée" malhabile). Le but de chaque chunk est d'abord présenté et à la fin de chacun, quelques graphes et valeurs numériques intéressante sont donnés avec leus commentaires succincts.
+
+
+##  Chargement et Les données disponibles (repris d'Eric sans changement)
+
+
+```{r}
+rm(list=ls())
+# setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
+load("Ain@Vouglans.Rdata")
+#load("Buech@Chambons.Rdata")
+#load("Drac@Sautet.Rdata")
+library(tidyverse)
+library(tidyselect)
+library(lubridate)
+library(R2jags)
+library(verification)
+library(GGally)
+```
+
+
+Données journalières de températures fournies par EDF-DTG aux stations suivantes:
+
+- l' Ain à Vouglans, 
+
+- le Buech à Chambons,
+
+- le Drac au Sautet.
+
+On reprend les data.frames d'Eric: l'"historique journalier" sur la période 1953 à 2015 dans le *data.frame dhisto*, ainsi que celui des "$50$ membres du Centre Européen de Prévision" pour les années 2005 à 2008 (4 ans avec échéance de 1 à 7 jours) puis de 2O11 à 1015 (5 ans pour des prévisions jusqu'à une échéance de 9 jours) à Vouglans dans le *data.frame dtout*.
+
+NB: Je suppose QUE dhisto et dtout sont inclus dans le fichier "Ain@Vouglans.Rdata".
+
+# Un coup d'oeil sur les données repris D'Eric
+
+```{r}
+dhisto %>% glimpse
+range(dhisto$Date)
+dtout %>% head()
+dtout %>% group_by(Year) %>% summarize(MaxEcheance=max(Echeance), counts=n())
+```
+
+## Analyse climatologique
+
+Eric a illustré les fortes fluctuations saisonnières des températures journalières au cours de l'année:
+
+```{r}
+Year<-dhisto[,5]
+dhisto %>% mutate(an= factor(Year)) %>% 
+ggplot(aes(x = Calendaire, y= T, color = an)) + geom_line(alpha=0.5)
+horsain = ymd("2003-10-15")
+```
+
+On voit apparaître un comportement très sûrement aberrant en date du 2003-10-15, horsain dont on enlève l'année 2003 complète du fichier historique dhisto.
+
+```{r}
+dhisto %>% filter(Year!= 2003) %>% mutate(an=factor(Year)) %>% ggplot(aes(x = Calendaire, y= T)) + geom_point(aes( color = an),alpha=0.5, shape ='.', show.legend = FALSE)+geom_smooth()+labs(x='Jours Calendaires', y='Températures', title="Climatologie à Vouglans")
+```
+
+# Première modification JB : On va alors construire une température moyenne de réference lissée pour chaque jour calendaire de l'année. Pour construire ces estimateurs lissés périodiques, on *régresse*, en fonction des 4 premières harmoniques, **les températures interannuelles sur la base calendaire moyenne** après élimination des années bissextiles. Les températures désaisonnalisées sont appelées %T_ecart%. Contrairement à Eric, on ne procède pas à la regression sur les variances mais à un classement par saison- voir plus loin.
+
+# On doit noter que le rejet "bissextile" par la variable calendaire=366 rejette en fait la dernière observation de chaque année bissextile c'est à dire le *31 décembre*. Nous avons conservé ceci pour le calcul des valeurs climatiques ajustées (T_ref_lis)
+
+
+```{r}
+dhisto %>% filter(Year!= 2003, Calendaire != 366) -> histo_ref
+tt<-1:22630
+modlin<-lm(T~ 1+ sin(2*pi*tt/365)+
+          cos(2*pi*tt/365)+
+          sin(4*pi*tt/365) +
+          cos(4*pi*tt/365)+
+          sin(6*pi*tt/365) +
+          cos(6*pi*tt/365)+
+          sin(8*pi*tt/365)+
+          cos(8*pi*tt/365), data=histo_ref
+          )
+histo_ref %>% mutate(T_ref_lis=modlin$fitted.values,T_ecart=T-T_ref_lis) -> histo_ref
+T_ecart<-as.numeric(histo_ref[,9],narm=FALSE)
+calend<-as.numeric(histo_ref[,7],narm=FALSE)
+statec<-matrix(NA,365,2)
+for(j in 1:365){
+  statec[j,] <- c(mean(T_ecart[which(calend==j)]),sd(T_ecart[which(calend==j)])) 
+ }
+Mec<-statec[,1]
+Sdec<-statec[,2]
+HC<-hist(T_ecart,100,right=FALSE,plot=FALSE)
+dhc<-HC[[3]]
+lhc<-HC[[4]]
+N<-length(T_ecart)
+MTE<-mean(T_ecart)
+SDTE<-sd(T_ecart)
+plot(1:N,T_ecart,"p")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(1:365,Mec,"p",main="Mec : Moyenne des écarts clim.")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(lhc,dhc, "h",main="Histogramme et ajustement normal")
+grid(nx=NULL,ny=NULL,lty=6)
+lines(lhc,dnorm(lhc,MTE,SDTE),"l",col="red") 
+plot(1:365,Sdec, "p",main="Sdec : Ecart-type des écarts clim.")
+grid(nx=NULL,ny=NULL,lty=6)
+autoc<-acf(T_ecart,lag.max=10,plot=TRUE, sub="Autocorrélation journalière")
+lcl<-c(qnorm(0.25,MTE,SDTE),qnorm(0.75,MTE,SDTE))
+print(c("Nombre","Moyenne","Ecart-type"))
+print(c(N,MTE,SDTE),digit=5)
+print("quantile-0.25 et quantile-0.75")
+print(lcl)
+```
+
+
+# Commantaires de JB: les  5 graphes ci dessus veulent vérifier la stationnarité et la normalité des variables "T_ecarts" désaisonnalisées. On notera que les autocorrélations sont notables mais très légèrement biaisées puisque, pour les fins d'années bissextiles, les écarts du 01/01 de l'année suivante sont reliés à ceux du 30/12 de l'année bissextile précèdente du fait de la selection opérée pour le calcul sur l'ensemble des données historiques et non les seules moyennes comme le fait Eric. 
+
+## La technique BFS laissera la possibilité d'introduire, au niveau prédictif, les températures des jours précédents comme prédicteur conjointement aux Z ou leurs résumés**.
+
+## On notera les bons résultats globaux de cette desaisonnalisation simplifiée. Cependant il reste une variation calendaire de l'écart-type Sdec (5éme graphe). Je pense qu'on peut se contenter  d'une possibilité de variation sur deux saisons été (8 mois) et hiver (4 mois). Dans un premier jet nous n'avons tenu compte que de la saison 2 (été: 8 mois) pour illustration. Les deux saisons sont introduites comme variable dans "histo_ref".
+
+# Pour illustration on utilisera donc cette variable T_ecart de la saison 2 (été) du fichier  histo_ref constituant la variable désaisonalisée climatique pour construire les variables de Brier, discrètisées ici en 3 classes de cette variable T_ecart supposée normale. C'est bien sûr une discrétisation très sommaire. Les limites climatiques de ces classes d'écarts de température: §(.<=-2.409, <.<=2.409, .>2.409)§  correspondent aux probabilités normales de classe (0.25,0.50,0.25) de --T_ecart climatique--. Elles seront abandonnées au profit des mêmes limites calculées sur les données de l'été ci après.
+
+## ------------------------
+
+## Maintenant on selectionne selon la saison 2 et on constitue le fichier utile intermédiaire "dbs", en joignant les moyennes et écarts types d'ensemble à dtout, tibble de base d'Eric.
+
+## ON sort les propriétés statistiques de la saison sélectionnée ainsi,que les limites de classes générales pour le Brier. Ces limites peuvent être changées (notamment pour les calculs CEP).
+
+```{r}
+histo_ref %>% mutate(Saison=if_else(Month<4|Month>11,1,2)) ->histos
+histos%>% filter(Saison!=1) ->histos
+T_ecart<-as.numeric(histos[,9],narm=FALSE)
+HC<-hist(T_ecart,100,right=FALSE,plot=FALSE)
+dhc<-HC[[3]]
+lhc<-HC[[4]]
+N<-length(T_ecart)
+MTE<-mean(T_ecart)
+SDTE<-sd(T_ecart)
+plot(1:N,T_ecart,"p")
+Mois<-histos[,6]
+ms<-c(4:11)
+MTm<-rep(NA,8)
+SDTm<-rep(NA,8)
+for(j in 1:length(ms)){
+MTm[j]<-mean(T_ecart[which(Mois==ms[j])])  
+SDTm[j]<-sd(T_ecart[which(Mois==ms[j])])
+}
+plot(4:11,MTm,"l",main="Moyennes mensuelles",lwd=3)
+lines(4:11,rep(MTE,8),"l",col="red",lwd=6)
+grid(nx=NULL,ny=NULL,lty=6)
+plot(4:11,SDTm,"l",main="Ecart_types mensuels",lwd=3) 
+lines(4:11,rep(SDTE,8),"l",col="red",lwd=6)
+grid(nx=NULL,ny=NULL,lty=6)
+plot(lhc,dhc, "h")
+lines(lhc,dnorm(lhc,MTE,SDTE),"l",col="red")
+lcl<-c(qnorm(0.25,MTE,SDTE),qnorm(0.75,MTE,SDTE))
+print("N et limites de classes choisies")
+print(c(N,lcl))
+# ------------
+dtout %>% filter(Calendaire != 366) %>%  
+mutate(Saison=if_else(Month<4|Month>11,1,2), Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
+    SDx=apply(dplyr::select(.,starts_with("Run")),1,sd),Saison=if_else(Month<4|Month>11,1,2)) -> db
+db%>% filter(Saison!=1) ->dbs
+print("moyenne  ecart_type globaux")
+print(c(MTE,SDTE))
+```
+
+## On notera les limites de classes {-2.26, 2.19},légèrement différentes puisqu'elles sont ici relatives à la saison 2 d'apprentissage sélectionnée sur 4 ans. L'hypothèse de normalité des "T_ecart" historique reste satisfaisante pour la saison. On y notera aussi une variation mensuelle résiduelle des moyennes et ecart_types qui relativise une complète désaisonnalisation. Le mois d'avril pose peut être question.
+## ----------------- 
+
+# Ensuite  selection de la Période d'apprentissage (2005 - 2009) donnant histosa et dbsa puis Tcal0, selection de colonnes utiles du fichier historique.
+
+
+```{r}
+dbs%>% mutate(apprent=if_else(Year<2010,1,2)) -> dbsa
+dbsa%>%filter(apprent!= 2) -> dbsa
+histos%>%mutate(apprent=if_else(Year<2005|Year>2008,1,2))  -> histosa
+histosa%>%filter(apprent!= 1) -> histosa
+dim(dbsa)
+dim(histosa)
+Tcal0<-histosa[,c(4,7,8,9,10)]
+head(Tcal0)
+```
+
+# Puis "CHOIX DE L'ECHEANCE" de ECHba parmi les 1:7 possibles. Le cas choisi est l'échéance 4
+# Ensuite combinaison des deux tibbles: histos (données historiques) et dtoutba que l'on joint à Tcal0 pour obtenir le tibble Tcala pour cette échéance en période d'apprentissage). 
+
+** Le fichier de travail final d'apprentissage est donc Tcala.
+Pour les 3 modèles d'ensemble la variable modélisée est donc **la variable T_cart**  de la sous période supposée stationnaire choisie
+
+```{r}
+ECHba<-4
+dbsa%>%filter(Echeance==ECHba) -> dtoutba 
+dtoutba<-bind_cols(dtoutba,Tcal0)
+dtoutba<-mutate(dtoutba,T_ecart=T-T_ref_lis,Xbar=Xbar-T_ref_lis)
+Tcala<-dtoutba[, c(1,3,55,57:62:64)]
+head(Tcala)
+```
+
+# Rappelons que nous avons choisi l'échéance 4 pour illustration de l'apprentissage sur 2005 -2008.
+# -------------
+
+# ESSAIS DU CRITERE BRIER DISCRETISE.
+
+# A partir du fichier de base en apprentissage Tcala on calcule les valeurs discrètisées des écarts de température climatique et prévisions CEP sur **l'apprentissage**. Comme référence climatique on a pris les seuils de classe (-2.26, 2.19) qui sont les valeurs de T_ecart normales d'été (quantiles 0.25 et 0.75) pour la série climatique complète depuis 1953. Rappelons que les prévisions probabilistes CEP sont normales de moyennes MTcep et écarts types SDTcep.
+
+* Au départ on choisit l'apprentissage Tcala mais on peut choisir un échantillon annuel Tcalv dont le chunk est positionné ci après. Cependant, "pour le post-traitement CEP" il n'a pas de différences car, en dehors des moyennes et écarts types il n'y a pas de modèle ou paramètres particuliers à estimer (si le modèle normal est choisi a priori). Dans chaque cas on dispose de pseudo-prédictives pour autant que la loi normale soit respectée.
+
+* --Pour le moment nous ne traitons donc que la période d'apprentissage 2005-2008-- en **sautant le chunk de choix annuel suivant**.
+
+# --------------
+
+## Calcul validation annuel. On commence par le choix de l'année dans dbs et histos puis le Choix de l'échéance en validation et construction du fichier utile final Tcalav par selection et combinaison Tcalv.
+
+
+dbs%>% mutate(valid=if_else(Year==2012,1,2)) -> dbsv
+dbsv%>%filter(valid!= 2) -> dbsv
+histos%>%mutate(valid=if_else(Year==2012,1,2))  -> histosv
+histosv%>%filter(apprent!= 2) -> histosv
+dim(dbsv)
+dim(histosv)
+Tcal0v<-histosa[,c(4,7,8,9,10)]
+head(Tcal0v)
+# ----------------------------
+ECHbv<-1
+dbsv%>%filter(Echeance==ECHbv) -> dbsv 
+dbsv<-bind_cols(dbsv,Tcal0v)
+dbsv<-mutate(dbsv,T_ecart=T-T_ref_lis,Xbar=Xbar-T_ref_lis)
+Tcalv<-dbsv[, c(1,3,55,57:62:64)]
+head(Tcalv)
+
+
+# On constitue  les variables discrétisées Tds de T_ecart sur la période d'appentissage ainsi que les limites de classes résultantes de la variable CEP. Les distributions sont aussi vérifiées. Rappelons que les limites de classes sont calculés sur l'été climatique (variable lcl).
+
+
+```{r}
+# On a pu choisir une année particulière avec Tcalv ou l'échantillon de calage Tcala
+#Tcalv%>%filter(!is.na(Xbar)) -> Tcalv
+Tcala%>%filter(!is.na(Xbar)) -> Tcala
+Tds<-as.numeric(Tcala[,11],narm=FALSE)
+MY<-mean(Tds)
+SdY<-sd(Tds)
+lca<-lcl
+n<-length(Tds)
+BT<-matrix(NA,length(Tds),3)
+br<-c(qnorm(0.00001,MY,SdY),lca[1],lca[2],qnorm(0.99999,MY,SdY))
+for(j in 1:n){
+HB<- hist(Tds[j],br,plot=FALSE)
+BT[j,]<-HB[[2]]
+}
+PBT<-apply(BT,2,"sum")/n
+HT<-hist(Tds,50,right=FALSE,plot=FALSE)
+dht<-HT[[3]]
+lht<-HT[[4]]
+plot(lht,dht, "h")
+lines(lht,dnorm(lht,MY,SdY),"l",col="red")
+print("N Moyenne et Ecart-type clim. de référence")
+print(c(n,MY,SdY),digits=4)
+print("Fréquences de classes en apprentissage")
+print(c(PBT))
+# ---------valeurs CEP
+MTcep<-as.numeric(Tcala[,5],na.rm=FALSE)
+SDTcep<-as.numeric(Tcala[,6],na.rm=FALSE)
+# La matrice Pcep donne les prédicteurs cep par classe
+Pcep<-matrix(NA,n,3)
+Pcep[,1]<-pnorm(rep(lca[1],n),MTcep,SDTcep)
+Pcep[,2]<-pnorm(rep(lca[2],n),MTcep,SDTcep)-pnorm(lca[1],MTcep,SDTcep)
+Pcep[,3]<-1-pnorm(rep(lca[2],n),MTcep,SDTcep)
+print("Limites de classe et Moyennes des probabilités CEP")
+print(c(lca,apply(Pcep,2,"mean")))
+```
+
+# Ici rappelons que l'échéance 4 a été choisie
+Une indication de la valeur du modèle normal de température climatique est donnée en comparant les fréquences du vecteur BTP (sur 4 ans d'apprentissage) aux probabilités de référence (0.25 , 0.50 , 0.25) marquant un décalage pour les températures supérieurs à la moyenne. Il y a donc une certaine différence entre la climatologie historique de référence et la période d'apprentissage De plus on voit que les moyennes de probabilités de classes CEP montrent un net resserement de la dispersion précisé sur le chunk ci après.
+
+
+
+```{r}
+ng<-n
+Tred<-(Tds-MTcep)/SDTcep
+HT<-hist(Tred,50,right=FALSE,plot=FALSE)
+dhc<-HC[[3]]
+lhc<-HC[[4]]
+nr<-length(Tred)
+MTr<-mean(Tred)
+SDTr<-sd(Tred)
+plot(1:nr,Tred,"l")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(lhc,dhc, "h")
+lines(lhc,dnorm(lhc,MTr,SDTr),"l",col="red",lwd=6)
+pTred<-pnorm(Tred,0,1)
+plot(1:nr,sort(pTred),"l",col="red")
+lines(1:nr,(1:nr)/(nr+1))
+grid(nx=NULL,ny=NULL,lty=6)
+# ------------------
+Tredg<-Tred[1:ng]
+lg<-c(0.25,0.50,0.75)
+ainf<-qnorm(rep(lg[1],ng),MTr,SDTr) 
+am<-qnorm(rep(lg[2],ng),MTr,SDTr)
+asup<-qnorm(rep(lg[3],ng),MTr,SDTr)
+va1<-length(which(Tredg<=ainf))/ng
+va2<-length(which(Tredg<=asup&Tredg>ainf))/ng
+va3<-length(which(Tredg>asup))/ng
+print("Marges Tapprent. et CEP")
+print(c(PBT[1],va1))
+print(c(PBT[2],va2))
+print(c(PBT[3],va3))
+
+
+```
+
+# Le chunk qui précède concerne d'une part les graphes de distribution de Tds (écarts de T. en apprentissage centrés, réduits jour par jour avec les paramètres CEP de l'échéance 4) comparés aux distributions normales. La forte réduction de dispersion des écarts ainsi réduits de la --température naturelle-- doit être notée. On donne aussi les résultats par classe standardisée avec des ecarts importants.
+
+# ----------------
+
+# Nous passons aux Briers discrètisés et générallisés selon Degroot et Fienberg(1983)
+
+* On notera donc §y_{j}§ (Bernoulli généralisé type 0,1,0) et §a_{i}§, avec indices explicites, l'évènements réalisé, valeur cible observée d'une part et la valeur annonçée selon la prévision probabiliste d'autre part chaque jour. En quelque sorte a_{i} est une décision terminale issue de la prévision probabiliste dont on calcule le score dépendant de §y_{j}§. De la décision §a_{i}% et de §y_{j}§ réalisés résultera donc un coût quadratique (de Brier généralisé dissymétrique):
+
+$W(a,y)=\sum W_{i,j}(a_{i}-y_{j})^{2}$
+
+que l'on calcule connaissant:
+
+1. §va§ la distribution de probabilité marginale de prévoir §a_{i}§ ce jour là. Dans le contexte bayesien le vecteur va peut être interprété comme le resumé de l'information choisi ce jour pour prévoir l'état de la nature §y_{j}§.
+2. une famille de k distributions conditionnelles des probabilités d'observer jours où §a_{i}§ a été émis comme prévision. Pour l'apprentissage cette famille est donnée par la matrice
+§ρ_{ij}=Prob(y_{j}|a_{i})§
+
+§BS=\sum_{j=1}^{k}\sum_{i=1}^{k}[y_{j}][a_{i}|y_{j}](a_{i}-y_{j}%
+)^{2})=\sum_{i=1}^{k}\upsilon(a_{i})(\sum_{j=1}^{k}\rho_{ij}(a_{i}-y_{j}%
+)^{2})$
+
+Par anticipation selon le chunk suivant, on a:
+
+va
+0.2181070 0.5679012 0.2139918
+
+ro
+y/a           [,1]       [,2]       [,3]
+[1,]    0.04981456 0.09132669 0.07696574
+[2,]    0.12970584 0.23779404 0.20040136
+[3,]    0.04887466 0.08960355 0.07551356
+
+* Le chunk suivant calcule, pour chaque jour de la période d'apprentissage et pour la totalité de la période) les scores de Briers moyens: total BS, la part BS1 (imputée au calibrage imparfait) et BS2 la part dûe à l'imprécision (écart) de la prévision
+
+
+```{r}
+# La matrice Pcep donne les probabilités des prédicteurs cep par classe
+Pcep<-matrix(NA,n,3)
+Pcep[,1]<-pnorm(rep(lca[1],n),MTcep,SDTcep)
+Pcep[,2]<-pnorm(rep(lca[2],n),MTcep,SDTcep)-pnorm(lca[1],MTcep,SDTcep)
+Pcep[,3]<-1-pnorm(rep(lca[2],n),MTcep,SDTcep)
+BS<-rep(NA,n)
+BS1<-rep(NA,n)
+BS2<-rep(NA,n)
+ybar<-matrix(NA,n,3)
+va<-matrix(c(va1,va2,va3),3,3)
+py<-matrix(PBT,3,3,byrow=TRUE)
+# ro est la matrice des probabilités conjointes cible y, prévision a avec PBT comme prior
+ro<-va*py
+ybar<-matrix(NA,n,3)
+YM<-rep(NA,n)
+W<-matrix(c(1,1,1),3,3)
+for (j in 1:n){
+ pT<-Pcep[j,]
+ bTy<-BT[j,]
+ a<-matrix(c(pT),3,3)
+ y<-matrix(bTy,3,3,byrow=TRUE)
+ ybarj<-apply(y*ro,1,"sum")/apply(ro,1,"sum")
+ ybar[j,]<-ybarj
+ ybarm<-matrix(ybarj,3,3)
+ bs0<-apply(ro*W*(a-y)^2,1,"sum")
+ bs<-sum(va*bs0)
+ bs10<-apply(ro*W*(a-ybarm)^2,1,"sum")
+ bs1<-sum(va*bs10)
+ bs20<-apply(ro*W*(ybarm-y)^2,1,"sum")
+ bs2<-sum(va*bs20)
+ BS[j]<-bs  
+ BS1[j]<-bs1  
+ BS2[j]<-bs2
+ YM[j]<-mean(ybarj)
+}
+BSt<-mean(BS,na.rm=TRUE)
+BS1t<-mean(BS1,na.rm=TRUE)
+BS2t<-mean(BS2,na.rm= TRUE)
+Mybar<-apply(ybar,2,"mean")
+SDybar<-apply(ybar,2,"sd")
+hist(BS,50,main="histogramme des scores journaliers")
+print("liste des probabilités de va, ro")
+print(list(c(va1,va2,va3),ro))
+print("Moyenne de ybar")
+print(mean(YM))
+print("-------------")
+print("Briers moyen global - dû au calibrage - dû à la précision et pourcentages")
+print(c(BSt,BS1t,BS2t))
+print(c("Pourcentages"))
+print(c(BS1t/BSt,BS2t/BSt))
+```
+
+## Pour la période d'apprentissage 2005-2008, les resultats ci dessus sont les scores de Brier moyens journalier total, la part dûe à l'absence de calibrage et la part dûe au manque de précision, calculées selon les formules:
+
+$\BS1=\sum_{i=1}^{k}\sum_{j=1}^{k}\upsilon(a_{i})\rho_{ij}([a_{i}]-\bar
+{y}_{a_{i}}^{(\rho)})^{2}\§
+
+§\BS2=\sum_{i=1}^{k}\sum_{j=1}^{k}\upsilon(a_{i})\rho
+_{ij}(\bar{y}_{a_{i}}^{(\rho)}-y_{j})^{2}\$
+
+# ------------------
+
+# Calcul de Brier assymétrique avec regret paramétré W dans les classes centrale et extreme
+a revoir pour l'optimum
+
+```{r}
+W<-matrix(c(1,1,1),3,3)
+W1<-matrix(c(1,5,1),3,3,byrow=TRUE)
+W2<-matrix(c(5,1,1),3,3,byrow=TRUE)
+BSW<-matrix(NA,n,3)
+BSW1<-matrix(NA,n,3)
+BSW2<-matrix(NA,n,3)
+aopt<-rep(NA,n)
+aopt1<-rep(NA,n)
+aopt2<-rep(NA,n)
+yobs<-rep(NA,n)
+erreur<-rep(NA,n)
+va<-matrix(c(va1,va2,va3),3,3)
+py<-matrix(PBT,3,3,byrow=TRUE)
+# ro est la matrice des probabilités conjointes cible y, prévision va avec PBT comme prior
+ro<-va*py
+BS<-rep(NA,n)
+BS1<-rep(NA,n)
+BS2<-rep(NA,n)
+for (j in 1:n){
+ pT<-Pcep[j,]
+ bTy<-BT[j,]
+ a<-matrix(c(pT),3,3)
+ y<-matrix(bTy,3,3,byrow=TRUE)
+ ybarj<-apply(y*W*ro,1,"sum")/apply(W*ro,1,"sum")
+ ybarm<-matrix(ybarj,3,3)
+ bsW0<-apply(ro*W*(a-ybarm)^2,1,"sum")
+ bsW<-sum(va*bsW0)
+ BSW[j,]<-bsW
+ ybarj1<-apply(y*W1*ro,1,"sum")/apply(W1*ro,1,"sum")
+ ybarm1<-matrix(ybarj1,3,3)
+ bsW10<-apply(ro*W1*(a-ybarm1)^2,1,"sum")
+ bsW1<-sum(va*bsW10)
+ BSW1[j,]<-bsW1
+ ybarj2<-apply(y*W2*ro,1,"sum")/apply(W2*ro,1,"sum")
+ ybarm2<-matrix(ybarj2,3,3)
+ bsW20<-apply(ro*W2*(a-ybarm2)^2,1,"sum")
+ bsW2<-sum(va*bsW20)
+ BSW2[j,]<-bsW2
+aopt[j]<-as.numeric(which.min(bsW0))
+yobs[j]<-as.numeric(which.max(bTy))
+aopt1[j]<-as.numeric(which.min(bsW10))
+aopt2[j]<-as.numeric(which.min(bsW20))
+}
+BW<-mean(BSW,na.rm=TRUE)
+BW1<-mean(BSW1,na.rm=TRUE)
+BW2<-mean(BSW2,na.rm=TRUE)
+B<-mean((aopt-yobs)^2,na.rm=TRUE)
+B1<-mean((aopt1-yobs)^2,na.rm=TRUE)
+B2<-mean((aopt2-yobs)^2,na.rm=TRUE)
+NC<-c(1:50)
+
+plot(NC,aopt[NC]-yobs[NC],"l",col="black",main="Erreur_crps: previ. - cible")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(NC,aopt1[NC]-yobs[NC],"l",col="black",main="Erreur_coût1: previ. - cible")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(NC,aopt2[NC]-yobs[NC],"l",col="black",main="Erreur_coût1: previ. - cible")
+grid(nx=NULL,ny=NULL,lty=6)
+NEc<-rep(NA,5)
+NEc1<-rep(NA,5)
+NEc2<-rep(NA,5)
+Ec<-as.vector(c(-2,-1,0,1,2))
+for (j in 1:5){
+  NEc[j]<-length(which(aopt-yobs==Ec[j]))
+  NEc1[j]<-length(which(aopt1-yobs==Ec[j]))
+  NEc2[j]<-length(which(aopt2-yobs==Ec[j]))
+}
+plot(Ec,NEc/n,"l",sub="Fréquences des écarts de prévision",col="black",lwd=6)
+grid(nx=NULL,ny=NULL,lty=6)
+plot(Ec,NEc1/n,"l",sub="Fréquences_coût1 des écarts de prévision",col="red",lwd=6)
+grid(nx=NULL,ny=NULL,lty=6)
+plot(Ec,NEc2/n,"l",sub="Fréquences_coût2 des écarts de prévision",col="green",lwd=6)
+grid(nx=NULL,ny=NULL,lty=6)
+mecart<-matrix(data = c(NEc/n,NEc1/n,NEc2/n),3,5,byrow=TRUE)
+print("Fréquences moyennes des écarts de prévision")
+print(mecart,digits=3)
+print("Moyennes quadratiques de ces écarts")
+print(c(B,B1,B2),digits=3)
+```
+# Commentaire important: même avec ces fonctions de coût sommaires on voit leur rôle important sur le choix des --prévisions terminales (différent des prévisions probabilistes) et donc ceci montre le caractère inadéquat des critères symétriques comme le CRPS ou le ROC.
+
+# Question: Luc doit il avoir le même jugement sur les prévisions d'ensemble que Vincent avant la venue de celui ci à l'IREQ.
+
+
+# -------------
+
+# Modèle échangeable d'ensemble à 2 pivôts
+
+On fait l'apprentissage du modèle sur la même période (2005-2008). 
+
+# JB: j'ai repris les chunks du JAGS d'Eric pour l'inference Gibbs du modèle échangeable_BFS simplement en reconstruisant le kibble apprentissage  à partir de Tcala. ci dessous.
+
+
+```{r}
+Tcala %>% filter( !is.na(Calendaire1)) %>% 
+ mutate(theta=T_ecart,xbar=Xbar, v2=SDx^2) %>%   filter(!is.na(theta),
+          !is.na(xbar),!is.na(v2)) -> learning_sample
+learning_sample %>%  dplyr::select(theta,xbar,v2) -> apprentissage
+```
+
+## Modèle Gamma-Normal à deux pivots (échangeable_BFS)
+
+Rappelons la suggestion de Jacques dans son document *EnsembleSaison.*
+Les membres s'appuient sur deux pivots latents $Z_{1t}$ et $Z_{2t}$, de telle sorte que le modèle échangeable s'écrit:
+
+$${X_{ts}} = \alpha  + \beta {Z_{1t}} + \lambda \sigma {Z_{2t}}^{ - O.5}{\varepsilon _{ts}}$$
+
+L'inférence des coefficients $\alpha ,\beta ,\lambda , g$ sera menée sur l' échantillon d'apprentissage.
+
+
+On a conservé l'estimation bayésienne de $\alpha ,\beta ,\lambda , g$ grâce au logiciel d'inférence bayésienne *Jags*.
+
+```{r}
+model_string <- "
+model{
+a<-(S-1)/2
+for (t in 1:N){
+m[t] <- alpha+beta*Z1[t]
+preci[t]<- Z2[t]/(lambda2)
+xbar[t] ~ dnorm(m[t], preci[t])
+b[t]<-preci[t]*a
+v2[t] ~ dgamma(a,b[t])
+# latentes
+Z2[t] ~ dgamma(g,1)
+Z1[t] ~ dnorm(0, 1)
+}
+alpha ~ dunif(-10,10)
+beta ~ dunif(0,10)
+lambda2 ~ dunif(0,10)
+g ~ dunif(0.5,10)
+}
+"
+params=c("alpha","beta","lambda2","g")
+data <- list(xbar=apprentissage$xbar,
+             v2=apprentissage$v2,
+             N=length(apprentissage$xbar),
+             S=50)
+temp<-jags(data = data, model.file = textConnection(model_string),
+           parameters.to.save = params,n.chains = 3,
+           n.burnin = 500,n.iter = 1000)
+```
+
+
+```{r}
+temp$BUGSoutput$sims.matrix %>% 
+  as.data.frame() %>% 
+  dplyr::select(alpha,beta,lambda2,g) ->alphabetalambda2g
+  alphabetalambda2g %>% 
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5) +
+  facet_grid(param~.,scales = "free") 
+
+```
+
+
+L'intercept $\alpha$ est possiblement nul, la pente $\beta$ restant inférieure à $1$.
+La connaissance a posteriori de $g$ est assez incertaine; $\lambda^2$ et $g$ sont fortement corrélés.
+
+```{r}
+ggpairs(data = alphabetalambda2g)
+
+```
+
+```{r}
+knitr::kable(rbind(mean=apply(X = alphabetalambda2g,2,mean),std=apply(X = alphabetalambda2g,2,var)^0.5,apply(X = alphabetalambda2g,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+knitr::kable(cor(alphabetalambda2g),dig=3)
+```
+
+### les estimations moyennes sont remarquablement précises comme rapportées ci dessous:
+
+paramètres   alpha  beta   lambda2  g
+moyennes	   0.412	3.036	 1.799	  2.354
+Ecart-types	 0.097	0.074	 0.087	  0.102
+
+## Nous pouvons procèder à l'estimation des propriétés de la prévision (par le modèle échangeable-BFS sur la période d'apprentissage), en négligeant les incertitudes de ces hyper-paramètres du modèle marginal. 
+
+# Nous nous arrètons ici (Paramètres du modèle marginal. ) pour la reprise des chunks d'Eric pour les raisons ci après
+
+# Commentaire d'Eric sur la simulation du modèle marginal de Xbar et V2:
+
+Sur cette comparaison estimation empirique et modèle, on voit que les lois marginales se calent raisonnablement avec notre modèle gamma-normal echangeable, malgré que nous n'ayons pas tenu compte des incertitudes à propos des hyper-paramètres ($\alpha,\beta, \gamma^2, g$) du modèle marginal.
+
+# Commentaire de JB:
+
+Je  ne suis pas d'accord avec ces résultats malgré les très beaux graphes made by ggplot.
+Mais ils ne correspondent pas à mes suggestions malgré ce qu'en dit Eric: ses choix sont 
+# --On va travailler comme Krzysztofowicz en négligeant les incertitudes des hyper-pa. data.frame(Z2=rgamma(Repet,g,1), Z1=rnorm(Repet))-- Ce ne sont pas les priors conjugués naturels que je proposais notamment Z1=rnorm(repet,mean=0,sd=Z2^(-0.5)) et qui, d'apès mes calculs justifiaient la  loi Student pour la moyenne connaissant la variance dans la NQT de l'analyse prédictive BFS.
+
+# Je préfere abandonner ce notebook pour le moment pour la redaction, en cours d'une note Scientific Word sur les aspects théoriques de cette poartie de la prévision avec le modèle échangeable et le modèle dit EMOS par Eric, --ce n'est pas le modèle EMOS mais celui ci simplifié en remplaçant l'ensemble des membres par leur moyenne-- En fait ce modèle d'EMOS d'Eric reprend la structure marginale de l'échangeabilité et fait une hypothèse, qui peut  être acceptable de la partie prédictive. C'est aussi de la philosophie de la structure BFS et la comparaison des méthodes doit impérativement en tenir compte.
+
+# Dans le genre de calculs basés sur le CRPS et les errements habituels de la littérature des ensembles, on oublie les avantages statistiques, notamment de parsimonie, des modèles échangeables. Eric ne traite pas d'ailleurs des erreurs d'échantillonnage. Le faut il si on veut être vraiment honnète envers ces modèles statistiques?
+
+
+
+
+
