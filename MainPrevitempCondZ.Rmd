@@ -1,0 +1,62 @@
+---
+title: "Calcul des conditionnelles des Z sachant X"
+author: "Eric Parent"
+date: "18 janvier 2021"
+output: 
+  html_document
+---
+Conservons les termes en $Z$ dans le calcul de  $log[Z,X]=log(X|Z)+log(Z)$.
+\begin{eqnarray*}
+log[X=(\bar{x},V^2)|Z]= -0.5 S\times \frac{Z_2}{\lambda^2}(\alpha+\beta Z_1-\bar{x})^2
++ 0.5 logZ_2 \\
+-Z_2(\frac{S-1}{2}\frac{V^2}{\lambda^2})+\frac{S-1}{2}logZ_2
+\end{eqnarray*}
+
+puisque $$\bar{X} \sim  N(\alpha+\beta Z_1,(SZ_2/\lambda^2)^{-1}\\
+V^2 \sim \Gamma(\frac{S-1}{2},\frac{S-1}{2}\frac{Z_2}{\lambda^2})$$
+
+De même $$log[Z]=  -0.5 \times Z_2Z_1^2+ 0.5 \times logZ_2+\\
+(g-1)\times log(Z_2)-Z_2\times r$$
+
+puisque $$Z_1 \sim  N(0,Z_2^{-1})\\
+Z_2 \sim \Gamma(g,r=1) $$
+
+En regroupant les deux expressions:
+$$log[X,Z]= -0.5 Z_2\times (\frac{S\beta^2+\lambda^2}{\lambda^2}) Z_1^2-2 \frac{S\beta}{\lambda^2}Z_1 (\bar{x}-\alpha))\\
++ 0.5 LogZ_2 \\-Z_2(r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}\frac{S}{\lambda^2}) \\
+(g-1+0.5+\frac{S-1}{2})\times log(Z_2)$$
+
+On constate donc que 
+$Z_1|X,Z_2$ est une loi normale de variance et de moyenne:
+$$V(Z_1|X,Z_2)= Z_2^{-1}(\frac{S\beta^2+\lambda^2}{\lambda^2})^{-1}=\frac{\lambda^2}{S\beta^2+\lambda^2}Z_2^{-1}\\
+E(Z_1|X)= \frac{S\beta}{S\beta^2+\lambda^2}(\bar{x}-\alpha)$$
+Je suis donc d'accord avec toi quant à la ligne 1144-1145 de ton previtemp 2021 qui donne *Z1[r,]*
+
+Par contre si je poursuis le calcul en complétant le carré pour calculer la marginale conditionnelle $Z_2|X$ sous forme d'une gamma(g',r'), il vient 
+
+$$log[X,Z]= -0.5 Z_2\times ((\frac{S\beta^2+\lambda^2}{\lambda^2}) Z_1^2-2 \frac{S\beta}{\lambda^2}Z_1 (\bar{x}-\alpha))\\
+-0.5 Z_2 (\frac{S\beta}{\lambda^2})^2(\bar{x}-\alpha)^2 (\frac{\lambda^2}{S\beta^2+\lambda^2})+ 0.5 LogZ_2 \\ +0.5 Z_2 (\frac{S\beta}{\lambda^2})^2(\bar{x}-\alpha)^2 (\frac{\lambda^2}{S\beta^2+\lambda^2})
+\\-Z_2(r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}\frac{S}{\lambda^2}) \\
+(g-1+\frac{S}{2})\times log(Z_2)$$
+Soit $$log[Z_2|X]= (g-1+\frac{S}{2})\times log(Z_2) \\ + Z_2 \frac{S}{2\lambda^2} (\bar{x}-\alpha)^2 (\frac{S\beta^2}{S\beta^2+\lambda^2})
+\\-Z_2(r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}
+\frac{S}{\lambda^2}) $$
+
+Soit $Z_2|X\sim \Gamma(g',r')$ avec 
+$$g'= (g+\frac{S}{2})  \\r'=r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}
+\frac{S}{\lambda^2}-\frac{S}{2\lambda^2} (\bar{x}-\alpha)^2 (\frac{S\beta^2}{S\beta^2+\lambda^2}) \\
+r'= r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+
+\frac{S}{2}\frac{(\bar{x}-\alpha)^2}{S\beta^2+\lambda^2}$$
+
+Du coup, j'ai l'impression que la ligne 1142-1143 de ton *previtemp 2021.Rmd*
+``` 
+Z2[r,]<-rgamma(NRM,g+25,rate=25*(49*w[r]/(50*lambda^2)+
+                                     (u[r]-alpha)^2/(lambda^2+50*beta^2)+1))
+```
+devrait putôt s'écrire
+``` 
+Z2[r,]<-rgamma(NRM,g+25,rate=1+25*(49*w[r]/(50*lambda^2)+
+                                     (u[r]-alpha)^2/(lambda^2+50*beta^2)))
+```
+                  
+
