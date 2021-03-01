@@ -1,0 +1,1362 @@
+---
+title: 'Previtemp 2021 - Vouglans Variant'
+author: "Jacques Bernier modif EP du 24/2/21"
+date: "01/2021"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+# Introduction
+
+Ce document s'appuie sur la théorie bayesienne de la décision statistique traditionnelle (TDS: Wald, Raiffa, Berger) pour faire l'inference de modèles de prévision d'ensembles normaux échangeables appliqués aux températures journalières (cas par défaut ci après: barrage de Vouglans).
+Il permet la mise en évidence des propriétés des modèles de prévision de type BFS (Bayesian Forecasting System). Ces modèles montrent l'importance des structures d'échangeabilité marginales qui s'opposent au principe dit préquentiel de Dawid.
+La théorie,l'interprétation des résultats et la comparason de plusieurs ensembles sont faits dens le SW.tex: Le Statisticien, La Probabilité et les Données - Prévision d'Ensembles 2021 disponible par ailleurs.
+Les programmes permettent de comparer divers modèles de prévisions que la littérature appelle "post-traitement".
+Certains de ceux ci tel le modèle CEP, n'utilisent pas Bayes. Notons que la décomposition optimale de DeGroot et Fienberg, basée sur un raisonnement bayesien ne peut être utilisée dans ce cas. Nous utiliserons une autre définition de la finesse basée sur l'intervalle interquartile des distributions prédictive et de calage. 
+
+Pour être à la mode j'ai susnommé ce programme **Variant**
+
+### Chargement préalable des données et librairies nécessaires
+
+```{r include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+library(tidyverse)
+library(tidyselect)
+library(lubridate)
+library(R2jags)
+library(verification)
+library(GGally)
+library(MCMCpack)
+library(goftest)
+library(e1071)
+library(grid)
+library(gridExtra)
+library(kableExtra)
+library(ensembleBMA)
+library(scoringRules)
+library(Hmisc)
+library(gtools)
+library(dirichletprocess)
+```
+
+
+
+## Les données d'ensembles disponibles
+
+Ce sont les données journalières de températures fournies par EDF-DTG pour l' Ain à Vouglans. 
+On reprend les data.frames d'Eric: l'"historique journalier" sur la période 1953 à 2015 dans le *data.frame dhisto*,puis de 2011 à 1015 (5 ans pour des prévisions jusqu'à une échéance de 9 jours) à Vouglans dans le *data.frame dtout*.
+
+### Vouglans (à partir des fichiers d'ERIC enregistrés sous les noms dhistov et dtoutv)
+
+```{r }
+#dhisto<-read.table("dhistoV")
+#dtout<-read.table("dtoutV")
+load("Ain@Vouglans.Rdata")
+```
+
+##            **Vouglans CEP**
+
+### Calcul d'une température moyenne journalière de référence et Première analyse des données (repris d'Eric)
+
+On va alors construire une température moyenne de réference lissée pour chaque jour calendaire de l'année. Pour construire ces estimateurs lissés périodiques, on *régresse, en fonction des 4 premières harmoniques, les températures interannuelles sur la base calendaire moyenne* après élimination des années bissextiles. Les températures désaisonnalisées sont appelées %T_ecart%. Contrairement à Eric, on ne procède pas à la regression sur les variances mais à un classement par saison. Par défaut on en distingue 2 (hiver: décembre à avril, été:mai à novembre).
+
+ On doit noter que le rejet "bissextile" par la variable calendaire=366 rejette en fait la dernière observation de chaque année bissextile c'est à dire le *31 décembre*. Nous avons conservé ceci pour le calcul des valeurs climatiques ajustées (T_ref_lis)
+
+```{r }
+dhisto %>% filter(Year!= 2003, Calendaire != 366) -> histo_ref
+dimh<-dim(histo_ref)
+tt<-1:dimh[[1]]
+modlin<-lm(T~ 1+ sin(2*pi*tt/365)+
+          cos(2*pi*tt/365)+
+          sin(4*pi*tt/365) +
+          cos(4*pi*tt/365)+
+          sin(6*pi*tt/365) +
+          cos(6*pi*tt/365)+
+          sin(8*pi*tt/365)+
+          cos(8*pi*tt/365), data=histo_ref
+          )
+histo_ref %>% mutate(T_ref_lis=modlin$fitted.values,T_ecart=T-T_ref_lis) -> histo_ref
+# ---Calcul moyennes et ecart-types calendaires
+histo_ref %>% group_by(Calendaire) %>% summarise(MTecal=mean(T_ecart),SDTecal=sd(T_ecart)) -> Tecal
+T_ecart<-histo_ref[,9]
+N<-length(T_ecart)
+MTE<-mean(T_ecart)
+SDTE<-sd(T_ecart)
+pU_ecart<-pnorm((T_ecart-MTE)/SDTE,0,1)
+#--------
+ggplot(histo_ref, aes(x = T_ecart)) + 
+    geom_histogram(aes(y =..density..),colour = "black", fill = "white") +
+stat_function(fun = dnorm, args = list(mean = MTE, sd = SDTE),col="red",lwd=2)
+#---------
+tacf<-acf(T_ecart,lag.max=15,plot=FALSE)
+btcaf <- with(tacf, data.frame(lag, acf))
+dg4 <- ggplot(data=btcaf, mapping=aes(x=lag, y=acf))+labs(title = "Autocorrélation journalière") + geom_bar(stat = "identity", position = "identity")
+histo_ref %>% ggplot(aes(x = 1:N, y= T_ecart)) + geom_point()+labs(x='Jours', y='T_ecart', title="Chronologie des écarts clim. journaliers") -> dg1
+Tecal %>% ggplot(aes(x = 1:365, y= MTecal)) + geom_point()+labs(x='Jours Calendaires', y='MTecal', title="Moyenne calendaire des écarts clim. journaliers") -> dg2
+Tecal %>% ggplot(aes(x = 1:365, y= SDTecal)) + geom_point()+labs(x='Jours Calendaires', y='SDTecal', title="Ecart-type calendaire des écarts clim. journaliers") -> dg3
+grid.arrange(dg1, dg2, dg3, dg4, ncol=2, nrow =2)
+```
+
+#### Commentaires
+
+--T_ecart-- est la variable historique complète 1953-2015 (hors 2003) désaisonnalisée (en moyenne), ici sans distinction de saison et stockée dans le fichier histo_ref.
+On notera la forte autocorrélation journalière ainsi que la variation calendaire des --écart-types-- En ce qui concerne ces écarts journaliers résiduels:
+
+La désaisonnalisation n'est donc pas complète et nous en avons tenu compte --en partie--par un découpage supplémentaire en deux saisons: été (jours calendaires 100:300), hiver de ces écarts.
+
+Pour diminuer l'effet des autocorrélations les statistiques et test sont calculés sur des sous-échantillons de valeurs de la variable traitée, appelée X en interne à la fonction. Il s'agit d'échantillons de "cibles de prévision" dont on veut tester la loi conditionnelle, à prédicteurs fixés. Pour les températures, les modèles sont généralement normaux. Ce sont les sous échantillons, préalablement constitués (1 valeur sur 3) qui sont introduits avec X. 
+
+-- MTE et SDTE sont les moyennes et écart-types vectorisés prédictifs calculés de la variable X.
+N0 est la taille initiale de l'échantillon.
+m est le nombre de prédicteurs + 1 du modèle de prévision.
+On peut éventuellement modifier  ces paramètres de référence pour traiter certaines distributions.
+
+# Les fonctions FITtestS(), FITvalid() renouvelées + ValCal et BFSjac. 
+
+Les méthodes de tests et validations sont groupées, pour tout post-traitement, dans ces 4 fonctions 
+
+Les méthodes de tests et validations sont groupées, pour tout post-traitement, dans ces 4 fonctions dont les chunks sont numérotés en 5ème position.
+
+##### FITtestS()
+
+Outre les histogrammes normaux et PIT (répartition sur K classes définieS par les quantiles de probabilités seq(0,1,1/K) sur la F.R de la variable de référence). K est généralement égal à 10. FITtestS sort un tableau:
+
+- La ligne 1 concerne le test classique de Cramer Von Mises : estimation en colonne V2, probabilité fréquentiste de dépassement (p-value) en V3.
+
+- La ligne 2 est le résultat du test classique du CHI2 sur la classification PIT (K classes) avec la p-value correspondante en V3 (hypothèse nulle uniforme).
+
+                      \[CHI2=\sum_{1}^{10}\frac{(n_{i}-n/K)^{2}}{N/K}%\]
+
+On notera que cette hypothese du diagramme PIT représente **l'hypothèse nulle** que cette prévision probabiliste est une vraie prédictive calibrée sur K classes.
+
+- La ligne 3 concerne la "crédibilité a posteriori du même CHI2", obtenue par simulation a posteriori(processus de Dirichlet a priori), à partir d'un prior uniforme sur les K classes (5000 répétitions par défaut). 
+La valeur de K par défaut est 20.
+ 
+ Compte tenu de la forte autocorrélation (0.8) des températures, on a pris une observation sur 3 (par défaut) pour tous les tests dans cette version.
+
+#### FITvalid()
+
+Cette fonction est plus orientée vers la validation de la prévision par des scores. Elle calcule:
+
+ - le score propre CRPS moyen, continu classique en V2 et en V3 le CV bootstrap des crps individuels. 
+ - Le score de Brier sur K classes BRJ(formule PIT où les classes d'amplitudes égales sont calculés selon la distribution climatique de la cible figurant ainsi lebon calibrage ).
+ - l'intervalle interquartile de la distribution prédictive
+ - l'intervalle interquartile de la distribution de calage. Le rapport des deux donne une expression de la finesse relative de précision plus intéressante que celle résultant de la décomposition classique mais fallacieuse des scores de Brier ou CRPS.
+ - Outre le CRPS moyen sur les N valeurs de la cible (en calage ou validation) la fonction calcule un échantillon en bootstrap bayesien (Rubin) simulé dont les moyennes et coefficients de variation sont données. Rappelons que, dans les scores, la "pseudo fonction de répartition de la cible" n'est estimée que par une simple fonction escalier(F(x<=y)=0,F(x>y)=1) en chaques point y auquel la distribution prédictive est comparée. Zamo et Naveau ont étudié l'incertitude du CRPS liée aux erreurs d'estimation des prédictives non paramétrique. Il ne faut pas oublier les incertitudes qui sont liées au choix des valeurs de référence de la cible y. C'est l'objet de notre bootstrap.
+ 
+Les histogrammes et les chroniques de cibles et intervalles de crédibilité de la prévision sont aussi donnés à partir des sorties de FITvalid.
+
+#### ValCal()
+
+Cette fonction compare la distribution prédictive au calage à partir des histogrammes PIT RESPECTIFS sur les mêmes données de cible et calcule une distance du CHI2 par rapport à une distribution de référence prédictive autre que calibrée. L'analyse est faite selon les propriétés du processus de Dirichlet non paramétrique correspondant au découpage des fréquences PIT.
+
+#### BFSjac()
+
+Simule les 2 pivots à partir des résumantes du modèle à deux pivôts et de leurs paramètres marginaux et calcule les valeurs centrés, réduites de chaque cible introduite.
+
+### Chunks des fonctions FITtestS, FITvalid (remodelées.), Valcal, BFSjac. 
+
+```{r }
+FITtestS<-function(GXp,K) {
+N<-length(GXp)
+NR<-5000
+TTP<-matrix(NA,3,2)
+ttpit<-cvm.test(GXp,"punif")
+TTP[1,]<-c(ttpit[[1]],ttpit[[2]])
+Hpit<-hist(GXp,seq(0,1,1/K),plot=FALSE)
+chit<-sum(((Hpit[[2]]-N/K)^2)/(N/K))
+TTP[2,]<-c(chit,1-pchisq(chit,K-1))
+Pdiri<-rdirichlet(NR, alpha =rep((N+1)/K,K) )
+Mnom<-matrix(NA,NR,K)
+for(j in 1:NR){
+ Mnom[j,]<-as.vector(rmultinom(1,N,Pdiri[j,]))
+}
+  Postpit<-apply(((Mnom-N/K)^2)/(N/K),1,"sum")
+TTP[3,]<- c(chit,length(which(Postpit>=chit))/NR)
+return(list(Hpit,TTP))
+}
+#-------  fin de FITtestS et début de FITvalid  -----------
+FITvalid<-function(X,mpred, sdpred,brke) {
+N<-length(X)
+K<-length(brke)-1
+Gc<-pnorm(X,mean(X),sd(X))
+Gpred<-pnorm(X,mpred,sdpred)
+MY<-matrix(NA,N,K)
+Ppred<-matrix(NA,N,K)
+for(j in 1:N){
+HG<-hist(Gpred[j],seq(0,1,1/K),plot=FALSE)
+HC<-hist(Gc[j],seq(0,1,1/K),plot=FALSE)
+Yj<-HG[[2]]
+aj<-diff(pnorm(brke,mpred[j],sdpred[j])) 
+Ppred[j,]<-aj
+MY[j,]<-Yj
+}
+BR<-sum(apply((Ppred-MY)^2,2,"sum"))/N
+RGp<-mean(sdpred)*(qnorm(0.75,0,1)-qnorm(0.25,0,1))
+RGc<-sd(X)*(qnorm(0.75,0,1)-qnorm(0.25,0,1))
+crpsX<-crps_norm(X,location = mpred, scale = sdpred)
+scrps<-sort(crpsX)
+PS<-matrix(NA,5000,N)
+Mcrps<-rep(NA,5000)
+for(r in 1:5000) {
+ U0<-sort(runif(N))
+ PS[r,1]<-U0[1]
+ PS[r,2:N]<-U0[2:N]-U0[1:N-1]
+ Mcrps[r]<-sum(scrps*PS[r,])
+}
+Score<-matrix(NA,5,1)
+cvarX<-sd(crpsX)/mean(crpsX)
+Score[1,]<-mean(crpsX)
+Score[2,]<-cvarX
+Score[3,]<-BR
+Score[4,]<-RGp
+Score[5,]<-RGc
+return(list(crpsX,Mcrps,Score))
+}
+# ------Fin de FITvalid et début de Valcal--------
+Valcal<-function(Gvp,Gvc,K) {
+N<-length(Gvp)
+NR<-5000
+TTP<-matrix(NA,2,2)
+Hcv<-hist(Gvc,seq(0,1,1/K),plot=FALSE)
+Hvv<-hist(Gvp,Hcv[[1]],plot=FALSE)
+chit<-sum(((Hvv[[2]]-Hcv[[2]])^2)/Hcv[[2]])
+TTP[1,]<-c(chit,1-pchisq(chit,K-1))
+Pdiri<-rdirichlet(NR, alpha =rep(N/K,K)) 
+Mnom<-matrix(NA,NR,K)
+for(j in 1:NR){
+ Mnom[j,]<-as.vector(rmultinom(1,N,Pdiri[j,])) 
+}
+  Postpit<-apply(((Mnom-Hcv[[2]])^2)/Hcv[[2]],1,"sum")
+TTP[2,]<- c(chit,length(which(Postpit>=chit))/NR)
+HVC<-matrix(c(Hvv[[2]],Hcv[[2]]),2,K,byrow=TRUE)
+return(list(HVC,TTP))
+}
+# ------Fin de ValCal et début de BFSjac--------
+BFSjac<-function(y,Xbar,V2,alpha,beta,g,lambda) {
+N<-length(y)
+NRM<-5000
+u<-Xbar
+v<-(y-mean(y))/sd(y)
+w<-V2
+rat<-rep(NA,NRM)
+Z1<-matrix(NA,N,NRM)
+Z2<-matrix(NA,N,NRM)
+for(r in 1:N) {
+  rat[r]<-1+25*(49*w[r]/(50*lambda^2)+(u[r]-alpha)^2/(lambda^2+50*beta^2))
+  Z2[r,]<-rgamma(NRM,g+25,rate=rat[r])
+  Z1[r,]<-rnorm(NRM,beta*(Xbar[r]-alpha)/(lambda^2+50*beta^2) ,lambda/sqrt(Z2[r,]*(lambda^2+50*beta^2)))
+}
+MZ1<-apply(Z1,1,"mean")
+MZ2<-apply(Z2,1,"mean")
+Ybsf<-(y-mean(y))/sd(y)
+return(list(Ybsf,MZ1,MZ2))
+}
+```
+
+
+### Selection et Propriétés statistiques des échantillons sélectionnés (ci dessous)
+
+ Les  chunks suivants construisent les fichiers saisonniers et les tibbles de données sélectionnés selon la saison en apprentissage et validation
+
+Les premiers résultats traitent de  l'échantillon d'appentissage avec quelques résultats de validations sur l'année 2012
+
+Les data.frames ou matrices de base nécessaires dtoutsa et dtoutsv sont d'abord construites
+puis vient ensuite ci dessous le choix de l'échéance pour consituer les data.frames de calcul Tcala et TCALv (Apprentissage et Validation).
+
+##### ECHANTILLONS  Saison, Apprentissage, Validation sélectionnéSmois=12,1,2,3,4 apprentissage: 2005 -2008 Validation (>2010): 2012
+
+2 saisons :été: mois= 5,6,7,8,9,10,11     hiver: mois=12,1,2,3,4 
+
+##### Choix de K
+
+**La valeur K=20 est prise par Défaut**
+
+```{r }
+K<-20
+valid<-2012
+ete<-c(5:11)
+histo_ref %>% mutate(Saison=if_else(Month %in% ete,1,2)) -> histo_ref
+histo_ref%>% filter(Saison!=2,Year %in% c(2005,2006,2007,2008) ) ->histosa
+dtout %>% filter(Calendaire != 366,Year %in% c(2005,2006,2007,2008) ) %>%  
+mutate(Saison=if_else(Month %in% c(5:11),1,2), Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),SDx=apply(dplyr::select(.,starts_with("Run")),1,sd)) -> dba
+dba %>% filter(Saison!=2) ->dtoutsa
+#--------
+histo_ref%>% filter(Saison!=2,Year == valid) ->histosv
+dtout %>% filter(Calendaire != 366,Year==valid) %>%  
+mutate(Saison=if_else(Month %in% c(5:11),1,2), Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
+    SDx=apply(dplyr::select(.,starts_with("Run")),1,sd)) -> dbv
+dbv %>% filter(Saison!=2) ->dtoutsv
+minT<-min(T_ecart)
+maxT<-max(T_ecart)
+MT<-mean(T_ecart)
+SDT<-sd(T_ecart)
+brk0<-qnorm((1:K-1)/K,MT,SDT)
+brke<-c(max(minT,brk0[1]),brk0[2:K],maxT)
+print("brke - lim.classes calib.")
+print(brke,digits=4)
+```
+
+### Choix de l’Echeance pour l’Apprentissage
+Le cas choisi par défaut est l’échéance 4 Ensuite on combine les deux tibbles: histos (données historiques) et dtoutba que l’on joint à Tcal0 pour obtenir par selection le tibble Tcala pour cette échéance en période d’apprenssage).
+
+–Le fichier de travail final d’apprentissage est donc Tcala et l’échéance: Indicateur ECHE.–
+
+Pour tous les modèles d’ensemble la variable modélisée est donc la variable température journalière T_cart de la sous période supposée stationnaire choisie
+
+###### Importance de brke
+brke (breack) est le découpage en K classes climatiques de référence utilisé pour les calcul des scores de Brier. Il est utilisé dans tous les tests et critères.
+
+– Parallélement on obtient –le fichier de validation Tcalv–, traité non systématiquement pour l’instant.
+
+```{r }
+#ECHE est l'échéance calculée
+ECHE<-4
+dtoutsa%>%filter(Echeance==ECHE) -> dtoutap_eche 
+histosa%>%filter(Year %in% c(2005,2006,2007,2008)) -> histosa
+#Tcala<-bind_cols(dtoutap_eche,histosa)
+Tcala<-left_join(dtoutap_eche,histosa)
+Tcala%>% filter(!is.na(Xbar))%>% mutate(T_ecart=T-T_ref_lis,Xbar=Xbar-T_ref_lis) -> Tcala
+#Tcala%>% dplyr::select(-`Date...1`,-`Year...54`,-`Month...55`,-`Calendaire...56`,-`Saison...57`) -> Tcala
+pTr<-pnorm(T_ecart,MT,SDT)
+#---------
+dtoutsv %>%filter(Echeance==ECHE) -> dtoutvp_eche 
+histosv %>%filter(Year ==2012) -> histosv
+#Tcalv<-bind_cols(dtoutvp_eche,histosv)
+Tcalv<-left_join(dtoutvp_eche,histosv)
+Tcalv%>% filter(!is.na(Xbar))%>% mutate(T_ecart=T-T_ref_lis,Xbar=Xbar-T_ref_lis) -> Tcalv
+#Tcalv%>% dplyr::select(-`Date...1`,-`Year...54`,-`Month...55`,-`Calendaire...56`,-`Saison...57`)  -> Tcalv
+#---------
+#CHOIX Apprentissage ou Validation : On a pu choisir une année particulière avec Tcalv ou l'échantillon de calage Tcala
+MEAS<-Tcala[,c(4:53,63)]
+MEVS<-Tcalv[,c(4:53,63)]
+deas<-dim(MEAS)
+devs<-dim(MEVS)
+neas<-deas[[1]]
+nevs<-devs[[1]]
+S<-deas[[2]]-1
+MEA<-matrix(NA,neas,S)
+for(j in 1:neas) {
+for(i in 1:S) {
+MEA[j,i]<-MEAS[j,i]-MEAS[j,S+1]  
+}
+}
+xbar<-as.vector(Tcala[seq(1,neas[1],3),58])
+y<-as.vector(Tcala[seq(1,neas[1],3),64])
+v2<-(as.vector(Tcala[seq(1,neas[1],3),59]))^2
+  MEV<-matrix(NA,nevs,S)
+for(j in 1:nevs) {
+for(i in 1:S) {
+MEV[j,i]<-MEVS[j,i]-MEVS[j,S+1]  
+}
+}
+xbarv<-as.vector(Tcalv[seq(1,nevs[1],3),58])
+yv<-as.vector(Tcalv[seq(1,nevs[1],3),64])
+v2v<-(as.vector(Tcalv[seq(1,nevs[1],3),59]))^2
+nv<-length(yv)
+print("Tailles d'échantillon cal - val")
+print(c(neas,nevs))
+apprenti<-matrix(c(y,xbar,v2),length(y),3)
+validat<-matrix(c(yv,xbarv,v2v),length(yv),3)
+```
+
+# Première Application: données HISTORIQUES - SAISON été historique
+
+## 1 - Analyse statistique de la période d'apprentissage (avec FITtestS())
+
+On rapelle que le traitement est fait sur un sous échantillon 1/3  pour diminuer (a priori) l'effet des autocoréllations.
+
+
+```{r }
+histo_ref%>% filter(Saison!=2) ->histo_1
+T_ecart1<-as.numeric(histo_1[,9],narm=FALSE)
+HC<-hist(T_ecart1,50,right=FALSE,plot=FALSE)
+N<-length(T_ecart1) 
+MT1<-rep(mean(T_ecart1),N)
+SDT1<-rep(sd(T_ecart1),N)
+#--------
+d0<-as.data.frame(T_ecart1)
+ggplot(d0, aes(x = T_ecart1)) + 
+    geom_histogram(aes(y =..density..),
+                    colour = "black", fill = "white") +
+stat_function(fun = dnorm, args = list(mean = mean(T_ecart1), sd = sd(T_ecart1)),col="red",lwd=5) 
+#---------
+par(bg="grey90")
+pTec<-pnorm(T_ecart1,MT1,SDT1)
+HPIT<-hist(pTec,seq(0,1,1/K),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),21),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+```
+
+### Commentaires
+
+Les résultats ci dessus sont ceux du fichier historique complet pour l'été. 
+Si l'ajustement normal semble graphiquement bon; il concerne cependant un échantillon très important (N=22630). L'application de tests dans ce cas donnerait des résultats négatifs, comportement habituel des tests frequentistes pour de très grands échantillons (déja noté par Fisher)
+
+####  Application des tests sur l'échantillon d'apprentissage ( methode FITtestS)
+
+Ci dessous on sort les propriétés statistiques de la saison, ici été, sélectionnée sur la periode d'apprentissage -(2005-2008 pour Vouglans - 284 valeurs).
+
+
+```{r }
+#T_ecarta est le vecteur d'Ecarts de températures d'apprentissage 
+T_ecarta<-as.numeric(Tcala[,64],narm=FALSE)
+N0<-length(T_ecarta)
+Tds<-T_ecarta[seq(1,N0,3)]
+N<-length(Tds)
+MY<-rep(mean(Tds),N)
+SdY<-rep(sd(Tds),N)
+#--------
+ggplot(as.data.frame(Tds), aes(x = Tds)) + 
+    geom_histogram(aes(y =..density..),
+                    colour = "black", fill = "white") +
+stat_function(fun = dnorm, args = list(mean = mean(Tds), sd = sd(Tds)),col="red",lwd=5)
+#---------
+par(bg="grey90")
+# Les tests sont appliqués à un sous echantillon 1/3 par défaut
+abet<-1/K + N/K
+bbet<- (K-1)/K + (K-1) * N/K
+lim_sup<-N*qbeta(0.975, abet,bbet)
+lim_inf<-N*qbeta(0.025, abet,bbet)
+GXp<-pnorm(Tds,MY,SdY)
+TTas<-FITtestS(GXp,K)
+HPIT<-TTas[[1]]
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(lim_sup,K+1),"l",col="black",lwd=5)
+lines(seq(0,1,1/K),rep(lim_inf,K+1),"l",col="black",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),K+1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+#---------
+TTtab<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",TTas[[2]]),3,3))
+print(TTtab)
+```
+
+### Commentaires
+
+Il s'agit ici des mêmes calculs mais sur la période d'appentissage du fichier "dtout" (2005-2015) des 
+ensembles. Le phénomène "big data sur les tests" est moins net sur N=284.
+Quel que soit la méthode de test (frequentiste ou bayesienne), le modèle normal est acceptable pour ces données de températures, mais à la limite pour le Chi2 fréquentiste, pvalue = 2% (sur 284 jours), comme vu prédemment pour l'échantillon complet. Ce résultat très limite est nettement contredit par le Cramer Von Mises et la credibilité bayesienne du Chi2, tous deux acceptables. Je rappelle que dans un papier récent, Gelman, Robert et quelques autres ont critiqué avec raison l'usage fait par les éditeurs de revues scientifques du seuil de signification de 5% (p.value frequentiste usuelle) comme critère de rejet des résultats de modélisations de papiers proposés à la publications. Ultérieurement je souhaiterais faire une interprétation bayesienne d'un Cramer Von Mises modifié. 
+Il ne s'agit pas ici de faire un mélange oecumenique frequentiste et bayesien. JE NE RECULE PAS DEVANT LE CLASSIQUE MAIS JE PEUX L'APPLIQUER DE FACON COHERENTE QUAND LES CONDITIONS DE L'APPLICATION LE PERMETTENT.
+
+**Mais on acceptera généralement les "tests bayesiens" pour la VALIDATION MARGINALE des modèles d'ensemble.** 
+
+ Exemple      CHI2_credib	  19.521  	0.364		 
+              
+
+Je rappelle que le calcul de crédibilité, ici 0.364 est obtenu par 5000 tirages aléatoires dans le modèle de Dirichlet et peut différer légèrement d'un passage du markdown à l'autre.              
+              
+## 1 - Première synthèse des membres d'ensembles en calage
+
+Les 2 chunks suivants font une analyse préliminaire des propriétés individuelles des membres dans les ensembles.
+Ceci suppose (hypothèse utilisée dans les modèles "best member", BMA, EMOS) que ces éléments de chaque ensemble sont identifiables par leur ordre lexicographique, ce qui peut être discutable si ces valeurs ne sont pas des jugements d'experts mais des simulations.
+
+```{r }
+MEa<-apply(MEA,2,"mean")
+SDEa<-apply(MEA,2,"sd")
+nn<-dim(MEA)
+S<-nn[[2]]
+layout(c(1,2))
+par(bg="grey90")
+lmy<-c(min(mean(Tds),min(MEa)),max(mean(Tds),max(MEa)))
+plot(1:S,MEa,"l",ylim=lmy,col="black",lwd=3,main="Moyennes_membre")
+lines(1:S,rep(mean(Tds),S),"l",col="red",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+lmx<-c(min(sd(Tds),min(SDEa)),max(sd(Tds),max(SDEa)))
+plot(1:S,SDEa,"l",ylim=lmx,col="black",lwd=3,main="Ecart-types_membre")
+lines(1:50,rep(sd(Tds),S),"l",col="red",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+
+```
+
+### Commentaires
+
+La sous-estimation systématique par rapport à la cible doit être notée
+
+## 2 - Validation par ACP de l'échangeabilité des ensembles en calage
+
+L'analyse en composantes principales est une technique classique qui a cependant sa valeur dans une perspective d'analyse préalable de fichiers de taille suffisante de données. C'est la seule méthode permettant de vérifier une part des conséquences de l'échangeabilité (mais pas toutes).
+
+```{r }
+Eacp<-MEA[seq(1,nn[[1]],3),]
+nn0<-dim(Eacp)
+S<-nn0[2]
+MA<-apply(Eacp,2,"mean")
+SdA<-apply(Eacp,2,"sd")
+ACP<-princomp(Eacp,cor=TRUE,scores=TRUE)
+sdF<-ACP[[1]]
+cdF<-ACP[[2]]
+vdF<-ACP[[6]]
+varcum<-cumsum(sdF*sdF)/sum(sdF*sdF)
+Inert<-sdF*sdF/sum(sdF*sdF)
+coef<-c(1 ,rep(100,9))
+print(Inert[1:10])
+par(bg="Grey90")
+layout(matrix(c(1,2,3,4),2,2))
+plot(1:10,Inert[1:10], "l",col="red",lwd=3, main="inerties x 100 des rangs 2:10 en noir")
+lines(1:10,coef*Inert[1:10], "l",col="black",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+plot(1:S,cdF[,1],"l",lwd=3,main="poids des membres dans 1er facteur")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(1:S,MA,"l",lwd=3,main="Moyennes des membres d'ensemble")
+grid(nx=NULL,ny=NULL,lty=6)
+plot(1:S,SdA,"l",lwd=3,main="Ecart-types des membres d'ensemble")
+grid(nx=NULL,ny=NULL,lty=6)
+```
+### Commentaires
+
+L'importance de la seule "première composante" (inertie>90%) est le fait très marquant de cette analyse. Certes les 50 membres tendent à prévoir la même cible; le résultat est cohérent avec l'objectif de prévision. Mais le niveau de part d'inertie de cette "unique" composante me surprend. On devrait donc s'attendre à ce que les méthodes de post-traitements type "best members" ou BMA soient dominées par les modèles échangeables dont l'ACP renforce la crédibilité.
+
+                          #--------------------------
+
+#             Vérification du modèle CEP en apprentissage (et validation)
+
+Rappelons que les prévisions probabilistes journalières CEP BRUTES sont supposées normales de moyennes $mtcep$ et écarts types $sdtcep$ en proposant ainsi cette distribution normale comme prédictive chaque jour.
+
+Rappelons que la méthode bayesienne applique Bayes en phase prédictive à partir d'un prior climatique assurant un bon calibrage des prévisions, ce que ne permet pas la méthode appelée CEP ci dessus. Dans la suite nous ne ferons l'inference directe du modèle conditionnel de la predictive que sur les cibles des périodes d'apprentissage et validation. Pour l'instant nous n'avons pas fait d'efforts plus particulier avec la "référence" climatique historique (identifiée à la période d'apprentissage 2005-2008) c'est à dire periodes de calage et historique identifiée. 
+
+Le  chunks "verif_CEP" suivant, concerne cette période d'apprentissage.
+
+
+```{r verif_CEP}
+Y<-apprenti[,1]
+N<-length(Y)
+MY<-mean(Y)
+SdY<-sd(Y)
+XBec<-apprenti[,2]
+SBec<-sqrt(apprenti[,3])
+mtcep<-as.numeric(XBec,na.rm=FALSE)
+sdtcep<-as.numeric(SBec,na.rm=FALSE)
+Tred<-(Y-mtcep)/sdtcep
+dfTred<-dnorm(Tred,0,1)
+# Inference et tests ------
+par(bg="grey90")
+GYp<-pnorm(Y,mtcep,sdtcep)
+TTacep<-FITtestS(GYp,K)
+ggplot(as.data.frame(Tred), aes(x = Tred)) + 
+    geom_histogram(aes(y =..density..),
+                    colour = "black", fill = "white") +
+stat_function(fun = dnorm, args = list(mean = MY, sd = SdY),col="red",lwd=2)
+pTred<-pnorm(Tred,mtcep,sdtcep)
+HPIT<-hist(pTred,seq(0,1,1/K),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),K+1),"l",col="red",lwd=3)
+lines(seq(0,1,1/K),rep(lim_sup,K+1),"l",col="black",lwd=3)
+lines(seq(0,1,1/K),rep(lim_inf,K+1),"l",col="black",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+ucep<-mtcep-mean(mtcep)
+cnt<-matrix(NA,length(ucep),4)
+for(j in 1:length(ucep)) {
+  br0<-c(min(ucep),sqrt(sdtcep[j])*qt(0.25,S-1),0,sqrt(sdtcep[j])*qt(0.75,S-1),max(ucep))
+  hh<-hist(ucep[j],br0,plot=FALSE)
+cnt[j,]<-hh[[2]] 
+}
+cqt<-apply(cnt,2,"sum")/length(ucep)
+layout(matrix(c(1,2,3,4),2,2))
+plot(sdtcep,mtcep,"p",col="red",lwd=3,main="Corrélation écart_type-moyenne centrée")
+lines(sdtcep,1.3*sqrt(49/47)*sdtcep,"l",lwd=3)
+lines(sdtcep,-1.3*sqrt(49/47)*sdtcep,"l",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+plot(0.25*(1:4),cqt,"h",col="blue",lwd=5,main="Répartition interquartile conditionnelle")
+lines(0.25*(1:4),rep(0.25,4),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+TTtabcep<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",TTacep[[2]]),3,3))
+Q2<-49*sdtcep^2/mean(sdtcep^2)
+mlQ<-mean(log(Q2))
+sdlQ<-sd(log(Q2))
+HQ2<-hist(Q2,50,plot=FALSE)
+ch<-HQ2[[3]]
+lh<-HQ2[[4]]
+plot(lh,ch, "h",main="Histogramme Variances",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(lh,dchisq(lh,49),"l",col="red",lwd=3)
+lines(lh,dlnorm(lh,mlQ,sdlQ),"l",col="green",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+U<-(mtcep-mean(mtcep))/sdtcep
+mU<-mean(U)
+sdU<-sd(U)
+HU<-hist(U,50,plot=FALSE)
+chu<-HU[[3]]
+lhu<-HU[[4]]
+plot(lhu,chu, "h",main="Histogramme Moyennes Studentisées",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(lhu,dt(lhu,49),"l",col="red",lwd=3)
+lines(lhu,dnorm(lhu,mean(U),sd(U)),"l",col="green",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+#----------Validation
+N<-length(Y)
+vcep<-FITvalid(Y,mtcep, sdtcep,brke)
+  Ttabcepv<-as.data.frame(matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",vcep[[3]]),5,2))
+GYc<-pnorm(Y,mean(Y),sd(Y))         
+Dyep<-Valcal(GYp,GYc,K)
+TTvc<-as.data.frame(matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3))
+TTtabcep
+Ttabcepv
+TTvc
+layout(c(1))
+hist(vcep[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+```
+
+
+## Résultats tests et validations CEP SUR 2012
+
+yv, xbarv, v2v sont les ecart_temp, xbar, v2 (variance)  sur 2012 (1/3)
+ 
+```{r valid_CEP}
+yv<-validat[,1]
+xbarv<-validat[,2]
+v2v<-validat[,3]
+vcep<-FITvalid(yv,xbarv, v2v,brke)
+pvcep<-pnorm(yv,xbarv,sqrt(v2v))
+HPIT<-hist(pvcep,seq(0,1,1/K),plot=FALSE)
+chv<-HPIT[[2]]
+lhv<-HPIT[[4]]
+par(bg="grey90")
+plot(lhv,chv, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(chv),K+1),"l",col="red",lwd=3)
+lines(seq(0,1,1/K),rep(lim_sup,K+1),"l",col="black",lwd=3)
+lines(seq(0,1,1/K),rep(lim_inf,K+1),"l",col="black",lwd=3)
+grid(nx=NULL,ny=NULL,lty=6)
+tvcep<-FITtestS(pvcep,K) 
+TTtvv<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",tvcep[[2]]),3,3))
+Ttabvv<-as.data.frame(matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",vcep[[3]]),5,2))
+Dyep<-Valcal(pvcep,pnorm(yv,mean(yv),sd(yv)),K)
+TTvc<-as.data.frame(matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3))
+TTtvv
+Ttabvv
+TTvc
+layout(c(1))
+hist(vcep[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+
+```
+
+### Commentaires
+
+Le parti pris de ne prendre qu'un jour sur 3 réduit ici la taille à 71 valeurs ce qui est peu. La répartition PIT devient moins significative ce qui relativise les résultats des tests.
+Quant au CRPS sa valeur n'est que très légèrement supérieure à celle de la référence avec une dispersion plus grande qu'en calage qui ne donne pas de signification à l'écart.
+
+                      #----------------------------
+
+
+#  Modèle Gamma-Normal à 2 pivots (échangeable)
+
+**les 3 chunks suivants sont liés** dans le sens où leurs résultats dépendent des mêmes paramètres marginaux des ensembles estimés par la première inference JAGS ci après.
+
+Nous allons passer à une inference marginale, d'abord sur les seuls membres de l'échantillon de calage Tcala (2005-2008).
+
+## - 1 Inference jags
+
+Ce modèle est décrit au niveau hiérarchique marginal par 4 paramètres $\alpha ,\beta ,\lambda , g$ dont on procède à l'estimation bayésienne grâce au logiciel d'inférence bayésienne *rjags*.
+
+Le modèle d'ensemble est le suivant: 
+
+\[X_{ts}=\alpha+\beta Z_{1t}+\lambda Z_{2t}^{-0.5}\epsilon_{ts}\text{\ avec
+\ }\epsilon_{ts}=dnorm(.,1,0),\text{ independantes}\]
+
+On utilise des priors vagues pour alpha, beta, lambda et g (ci après)
+
+Les deux variables latentes Z du niveau 1 sont:
+
+\[Z_{2t}=dgamma(.,g,1)\\
+Z_{1t}|Z_{2t}=dnorm(.,0,Z_{2t}^{-0.5}) \]
+
+La suite est essentiellement la reprise des traitements d'Eric, synthétisés et simplifiés par moi en termes des sorties notamment graphiques.
+
+Les données sont stockées soit dans apprenti soit dans validat.
+
+```{r }
+library(rjags)
+Tcal<-apprenti
+#Tcal<-validat
+y<-Tcal[,1]
+xbar<-Tcal[,2]
+V2<-Tcal[,3]
+#---------------------
+model2pivots <- "
+model{
+demiddl<- (S-1)/2
+# priors vagues
+alpha ~ dunif(-10,10)
+beta ~ dunif(0.01,20)
+lambda ~ dgamma(0.01,0.01)
+g ~ dgamma(0.1,0.1)
+# latentes
+for (t in 1:N) {Z2[t]~ dgamma(g,1)
+                Z1[t] ~ dnorm(0,Z2[t]) #la precision est Z2
+                
+# Observations
+                moy[t]<-alpha+beta*Z1[t]
+                preci[t]<-Z2[t]*S/lambda/lambda
+                xbar[t] ~ dnorm(moy[t],preci[t]) 
+                b[t]<-demiddl/lambda/lambda*Z2[t]
+                v2[t] ~ dgamma(demiddl,b[t])
+                }
+}
+"
+bugsdata<-list(xbar=Tcal[,1],
+             v2=Tcal[,3],
+             N=length(Tcal[,1]),
+             S=50)
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+inits1<-list(alpha=.5,beta=6,lambda=1, g=2)
+inits2<-list(alpha=.4,beta=5,lambda=1.1, g=3)
+inits3<-list(alpha=.2,beta=4,lambda= 1.2, g=4)
+if(!file.exists("outJB.RData")) {
+modele <- jags.model(file=textConnection(model2pivots), data=bugsdata, 
+                    inits=list(inits1, inits2,inits3),
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+
+variable.names=c("alpha","beta","lambda","g")
+out <- coda.samples(model=modele, variable.names=variable.names, 
+                    n.iter=n.iter,thin=n.thin)
+save(out,file="outJB.Rdata")}
+load(file="outJB.Rdata")
+STAT<-summary(out)
+
+```
+
+### Commentaires 
+
+Avec Out, calculé selon les 3 chaines jags mcmc, on sort les distributions a posteriori des 4 paramètres
+  
+En ce qui concerne les  résultats graphiques (j'ai abandonné les couleurs et ggplot en utilisant mes propres gagaplots simplistes)
+
+ATTENTION: Ce chunk et le suivant sont liés.
+Selon qu'il s'agit de calage ou validations les données et les estimations moyennes sont stockées dans un vecteur et une liste différente.
+
+```{r }
+postPARa<-out[[1]]
+alpha<-postPARa[,1]
+beta<-postPARa[,2]                
+g<-postPARa[,3] 
+lambda<-postPARa[,4]
+layout(matrix(c(1,2,3,4),2,2))
+par(bg="grey90")
+hist(alpha,50,col="black",main="alpha")
+grid(nx=NULL,ny=NULL,lty=6)
+hist(beta,50,col="black",main="beta")
+grid(nx=NULL,ny=NULL,lty=6)
+hist(g,50,col="black",main="g")
+grid(nx=NULL,ny=NULL,lty=6)
+hist(lambda,50,col="black",main="lambda")
+grid(nx=NULL,ny=NULL,lty=6) 
+knitr::kable(rbind(mean=apply(X = postPARa,2,mean),std=apply(X = postPARa,2,var)^0.5,apply(X = postPARa,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+mpara<-apply(X = postPARa,2,mean)
+Rap<-list(mpara,apprenti)
+#mparv<-apply(X = postPARa,2,mean) 
+#Rav<-list(mparv,validat)
+```
+
+### Commentaires  
+
+Les résultats ci dessus sont ceux du calage. Les estimations moyennes des 4 paramètres marginaux sont relativement précises ce qui donne un certain poids à ce modèle **latent**
+
+
+
+## Analyse marginale du modèle à deux pivots - Résultats graphiques (calage)
+
+Il s'agit ici de vérifier le modèle théorique à  2 pivôts avec les distributions marginales des résumantes.
+
+### Rappel
+
+On sait que la variance d'apprentissage d'un ensemble $s2$ est, à un facteur $g/lambda^2$ près, distribuée selon 
+un Fisher Snedecor à $(S-1,2*g)$ degrés de liberté 
+
+et $ST2=(xbar-alpha)/(k*sqrt(s2))$ 
+
+selon un Student indépendant à S-1 degrés de liberté où k est donné par:
+
+$k=\sqrt{\frac{S-1}{S}}\frac{\beta S+\lambda}{\lambda S}$
+
+-- Les latentes $Z_{1t}$ et $Z_{2t}$ ont les distributions conditionnelles (complètes marginales) suivantes:
+
+$[Z_{2t}]_{cc}=dgamma(.,g+S/2,1+(S/2)(s2_{t}/λ²+(X_{t}-α)^2/(λ²+Sβ²)))$
+
+  où $s2_{t}$ est la variance de l'ensemble à t.
+
+$[Z_{1t}|Z_{2t}]_{cc}=dnorm(.,h=Z_{2t}(((λ²+Sβ²))/(λ²)),((β(X_{t}-α))/(λ²+Sβ²)))$
+
+
+```{r }
+postPAR<-Rap[[1]]
+alpha<-postPAR[1]
+beta<-postPAR[2]
+g<-postPAR[3]
+lambda<-postPAR[4]
+S<-50
+lambda2<-lambda^2
+s2<-Tcal[,3]
+xbar<-Tcal[,2]
+k<-sqrt((beta^2+(S^(-1)*lambda2))/lambda2)
+ST2<-(xbar-alpha)/(k*sqrt(s2))
+F2<-g*s2/(lambda2)
+HF2<-hist(F2,50,plot=FALSE)
+hf<-HF2[[3]]         
+af<-HF2[[4]] 
+par(bg="grey90")
+plot(af,hf,"h",col="black",main="histogramme de variance réduite=F",lwd=5)
+lines(af,df(af,S-1,2*g),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+HST2<-hist(ST2*sqrt(s2),50,plot=FALSE)
+hst<-HST2[[3]]         
+ast<-HST2[[4]]  
+plot(ast,hst,"h",col="black",main="histogramme de moyenne stdudentisée",lwd=5)
+lines(ast,dt(ast,S-1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+ux<-xbar-alpha
+plot(sqrt(s2),xbar-mean(alpha),"p",col="black",lwd=3,main="Corrélation écart_type_moyenne centrée")
+lines(sqrt(s2),k*sqrt(s2)*qt(0.25,S-1),"l",col="red",lwd=3)
+lines(sqrt(s2),k*sqrt(s2)*qt(0.75,S-1),"l",col="red",lwd=3)
+grid(nx=NULL,ny=NULL,lty=3)
+cnt<-matrix(NA,length(xbar),4)
+for(j in 1:length(xbar)) {
+  br0<-c(min(ux),k*sqrt(s2[j])*qt(0.25,S-1),0,k*sqrt(s2[j])*qt(0.75,S-1),max(ux))
+  hh<-hist(ux[j],br0,plot=FALSE)
+cnt[j,]<-hh[[2]] 
+}
+cqt<-apply(cnt,2,"sum")/length(xbar)
+plot(0.25*(1:4),cqt,"h",col="blue",lwd=5,main="Répartition interquartile conditionnelle")
+lines(0.25*(1:4),rep(0.25,4),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+bfs<-BFSjac(y,xbar,V2,alpha,beta,g,lambda)
+mZ1<-bfs[[2]]
+mZ2<-bfs[[3]]
+ycr<-bfs[[1]]
+hist(ycr,50)
+``` 
+###Commentaires
+
+Ci dessus les résultats du modèle échangable à 2 pivôts sur la période de calage sont bons tant pour la variance d'ensemble avec un Fisher Sndecor que pour la moyenne conditionnelle, rapporté à l'écart type, avec un Student (en rouge). Le graphe de corrélation montre bien une certaine dépendance entre moyenne et écart type. Rappelons que moyenne et écart type sont indépendants pour des échantillons normaux indépendants. La répartition interquartile en 4 classes est notablement bien respectée, alors que, rappelons la même répartition pour les données brutes cep est très différente.
+
+
+# Modèle Gamma-Normal à 2 pivots échangeable - Phase prédictive
+
+## Première inference predictive, test et validation
+
+En suivant la suggestion d'Eric,j'ai, au départ, utilisé rjags sur le modèle linéaire:
+
+\[Y_{t}=\mu+\theta Z_{1t}+\epsilon_{t}\text{\ avec
+\ }\epsilon_{t}=dnorm(.h.V2_{t},0)\] où $h.V2{t}$ est le paramètre de précision que l'on prend proportionnel à V2 (la variance). On peut l'interpréter commun modèle type EMOS où la moyenne xbar résume l'ensemble des membres 
+les résultats de ce modèle prédictif que nous noterons EMOSE sont extraits des deux chunks suivants.
+
+
+*remarque* :Dans le programme on utilise les désignations u,v,w (voir bugsdata)
+
+```{r }
+library(rjags)
+bugsdata<-list(u=xbar, v=y, w=V2, N=length(y))
+ 
+modelPRED2pivots <- "
+model{
+for (t in 1:N) {
+
+# Observations
+                moy[t]<-mu+teta*u[t]
+                preci[t]<- h*w[t]
+                v[t] ~ dnorm(moy[t], preci[t]) 
+}
+
+ # priors vagues
+mu ~ dunif(-10,10)
+teta ~dunif(-10,20)
+h ~ dgamma(0.01,0.01)               
+}
+"
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+if(!file.exists("outPJB.RData")) {
+inits1<-list(mu=0,teta=10,h=1)
+modele <- jags.model(file=textConnection(modelPRED2pivots), data=bugsdata, 
+                    inits=inits1,
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+
+variable.names=c("mu","teta","h")
+outP <- coda.samples(model=modele, variable.names=variable.names, 
+                    n.iter=n.iter,thin=n.thin)
+
+save(outP,file="outPJB.Rdata")}
+load(file="outPJB.Rdata")
+summary(outP)
+```
+
+L'estimation de EMOSE par rjags sont stockés dans outP et illustrés ci dessous
+
+### Premiers résultats inference Jags prédictifs (prédicteurs non modélisés)
+
+```{r }
+postPARap<-outP[[1]]
+h<-postPARap[,1]
+mu<-postPARap[,2]                
+teta<-postPARap[,3] 
+layout(c(1,2,3))
+par(bg="grey90")
+hist(h,50,col="black",main="h")
+grid(nx=NULL,ny=NULL,lty=6)
+hist(mu,50,col="black",main="mu")
+grid(nx=NULL,ny=NULL,lty=6)
+hist(teta,50,col="black",main="teta")
+grid(nx=NULL,ny=NULL,lty=6)
+knitr::kable(rbind(mean=apply(X = postPARap,2,mean),std=apply(X = postPARap,2,var)^0.5,apply(X = postPARap,2, quantile, probs=c(0.05,0.25,0.5, 0.75, 0.95))), dig=3)
+
+```
+
+### Commentaires
+
+Une observation essentielle sur ce modèle: c'est un modèle de régression (censé être amélioré par une variance variable) mais de regression malgré tout où les échantillons des prédicteurs sont fixés et donc non modèlisés et indépendants du modèle marginal qu'ils sont censés représenter. En fait la régression est marginalement non paramètrique. On observera que c'est aussi le cas d'EMOS et de BMA et parfaitement en ligne avec l'hypothèse préquentielle et non avec l'hypothèse BFS, bayesienne que nous verrons plus loin. La différence est essentielle pour mesurer l'apport basique d'une vraie approche bayesienne comme l'a fait Krzysztofowicz.
+# ----------
+
+## Tests d'ajustement et de validation d'EMOS Echangeable (EMOSE) sur 2005-2008
+
+Avant de passer à une approche vraiment bayesienne, il nous faut compléter l'étude de notre modèle à 2 pivôts simples.
+
+```{r }
+# Changer éventuellement ici les variables associées à outP
+u=xbar
+v=y
+w=V2
+N=length(v)
+postPRED<-outP[[1]]
+mum<-mean(postPRED[,2])  
+tetam<-mean(postPRED[,3])               
+hm<-mean(postPRED[,1]) 
+Vrp<-sqrt(hm*w)*(v-mum-tetam*u)
+par(bg="grey90")
+layout(matrix(c(1,2,3,4),2,2))
+plot(1:N,Vrp,"h",main="Chronique des écarts réduits de prevision")
+grid(nx=NULL,ny=NULL,lty=6)
+HEV<-hist(Vrp,50,plot=FALSE)
+dev<-HEV[[3]]
+ev<-HEV[[4]]
+plot(ev,dev,"h",main="Histogramme Ecarts prédictifs réduits")
+lines(ev,dnorm(ev,0,1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+mrp<-mum+tetam*u
+sdrp<-sqrt(w/hm)
+Gvp<-pnorm(Vrp,0,1)
+TTaX1<-FITtestS(Gvp,K)
+X<-Vrp
+HPIT<-hist(Gvp,seq(0,1,1/K),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),K+1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+TTtabX1<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",TTaX1[[2]]),3,3))
+#----------
+vcep<-FITvalid(v,mrp,sdrp,brke)
+TtabX1v<-as.data.frame(matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",vcep[[3]]),5,2))
+plot(mrp,v,"p",main="regression cible-predicteur v.a réduite")
+lines(mrp,mrp,"l",col="red")
+grid(nx=NULL,ny=NULL,lty=6)
+Gvc<-pnorm(v,mean(v),sd(v))
+Dyep<-Valcal(Gvp,Gvc,K)
+TTvc<-as.data.frame(matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3))
+Hy<- Dyep[[1]]
+Hyv<- Hy[1,]
+Hyc<- Hy[2,]
+layout(c(1))
+plot(seq(1/K,1,1/K),Hyv,"h",lwd=3,col="blue",main="comparaison PRED-CALAGE")
+lines(seq(1/K,1,1/K),Hyc,"l",lwd=3,col="red")
+lines(seq(1/K,1,1/K),rep(N/K,20),"l",lwd=5,col="green")
+grid(nx=NULL,ny=NULL,lty=6)
+TTtabX1
+TtabX1v
+TTvc
+layout(c(1))
+hist(vcep[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+```
+
+
+### Commentaires
+
+ Si EMOSE récupère la correlation de la cible avec xbar mais s'agissant de prévision probabiliste, l'introduction d'une variance proprtionnelle à V2 n'introduit aucune amélioration prédictive car la dispersion prédictive est biaisée par les dispersions intra-membres et l'hyptohèse prédictive a une crédibilité quasi nulle . C'est ici la rançon de l'hypothèse préquentielle incapable de corriger les biais des données.                                                                                                                                                                                   
+J'ai aussi essayé d'autres fonctions de V2 comme second prédicteur de la variance. Tous les résultats vont dans le même sens. Aucun modèle predictif ne peut se comparer à celui ci
+On pourrait marquer une certaine déception vis à vis de ces résultats. QUOI le modèle 2 pivôts n'est il pas un EMOS échangeable? EMOS qui a les honneurs bibliographiques  mais n'est pas mieux loti sur Vouglans.
+
+## Tests d'ajustement et de validation d'EMOS Echangeable (EMOSE) sur 2012
+
+
+```{r }
+u=xbarv
+v=yv
+w=v2v
+N=length(v)
+Vrp<-sqrt(hm*w)*(v-mum-tetam*u)
+par(bg="grey90")
+layout(matrix(c(1,2,3,4),2,2))
+plot(1:N,Vrp,"h",main="Chronique des écarts réduits de prevision")
+grid(nx=NULL,ny=NULL,lty=6)
+HEV<-hist(Vrp,50,plot=FALSE)
+dev<-HEV[[3]]
+ev<-HEV[[4]]
+plot(ev,dev,"h",main="Histogramme Ecarts prédictifs réduits")
+lines(ev,dnorm(ev,0,1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+mrp<-mum+tetam*u
+sdrp<-sqrt(w/hm)
+Gvp<-pnorm(Vrp,0,1)
+TTaX1<-FITtestS(Gvp,K)
+HPIT<-hist(Gvp,seq(0,1,1/K),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),21),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+TTtabX1<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",TTaX1[[2]]),3,3))
+#----------
+vcep<-FITvalid(v,mrp, sdrp,brke)
+plot(mrp,v,"p",main="rchegression cible-predicteur v.a réduite")
+lines(mrp,mrp,"l",col="red")
+grid(nx=NULL,ny=NULL,lty=6)
+GVc<-pnorm(v,mean(v),sd(v))
+Dyep<-Valcal(Gvp,GVc,K)
+Hy<- Dyep[[1]]
+TTvc<-matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3)
+Hyv<- Hy[1,]
+Hyc<- Hy[2,]
+layout(c(1))
+plot(seq(1/K,1,1/K),Hyv,"h",lwd=3,col="blue",main="comparaison PRED-CALAGE")
+lines(seq(1/K,1,1/K),Hyc,"l",lwd=3,col="red")
+grid(nx=NULL,ny=NULL,lty=6)
+TtabX1v<-matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",vcep[[3]]),5,2)
+TTtabX1
+TtabX1v
+TTvc
+layout(c(1))
+hist(vcep[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+```
+
+
+### Commentaires 
+
+If faut noter la crédibilité calculée de la prédictive mais ici, avec 71 unités, nous sommes quasiment à la limite d'applicabilité du chi2. Le CRPS moyen est augmenté avec une dispersion plus grande. Mais, en théorie le modèle prédictif souffre des mêmes faiblesses que le calage avec la non influence des propriétés marginales.
+
+                    ##---------------------------
+
+# Application de la structure BFS
+
+Avec la structure marginale échangeable, il est plus réaliste de considérer un modèle prédictif directement de la même forme:
+
+\[Y_{t}=\mu+\theta Z_{1t}+\epsilon_{t}\text{\ avec
+\ }\epsilon_{t}=dnorm(.h.Z_{2t},0)\] 
+
+où les Z sont directement fonctions du modèle marginal et en suivant BFS on peut utiliser la conditionnelle 
+
+\[[Y,Z|X]=\int dnorm(Y|\mu,\theta,h).[Z] dZ\] 
+  
+
+log[Y|X]=E{Log[Y,Z|X]}-E{Log[Z|X]}=Q(X,paramètres)-H(X,paramètres)
+
+Mais H ne dépend que des paramètres marginaux des X et pas des paramètres prédictifs mu, teta, h. qu'on doit estimer
+
+Il faut donc maximiser Q qui est une forme quadratique dont les termes sont fonction standard des 3 paramètres et des sommes $\sum\Z2$,$\sum\Z2.Z1^2$,$\sum\Z2.Z1$,$\sum\Z1$. Ces sommes sont obtenues par simutations dans les conditionnelles complètes des Z (les résumantes étant fixées).
+
+Ici pour le calcul des sommes nous avons pris 1000 réplicats pour chaque jour t.
+
+```{r }
+NRM<-1000 
+postPAR<-Rap[[1]]
+alpha<-postPAR[1]
+beta<-postPAR[2]
+g<-postPAR[3]
+lambda<-postPAR[4]
+u<-apprenti[,2]
+y<-apprenti[,1]              
+v<-(y-mean(y))/sd(y)
+w<-apprenti[,3]
+N=length(y)
+Z1<-matrix(NA,N,NRM)
+Z2<-matrix(NA,N,NRM)
+rat<-matrix(NA,N)
+for(r in 1:N) {
+  rat[r]<-1+25*(49*w[r]/(50*lambda^2)+(u[r]-alpha)^2/(lambda^2+50*beta^2))
+  Z2[r,]<-rgamma(NRM,g+25,rat[r])
+  Z1[r,]<-rnorm(NRM,beta*(u[r]-alpha)/(lambda^2+50*beta^2),lambda/sqrt(Z2[r,]*(lambda^2+50*beta^2)))
+}
+A<-apply(Z2,1,"mean")
+B<-apply(Z2*Z1,1,"mean")
+C<-apply(Z2*Z1^2,1,"mean")
+D<-apply(Z1,1,"mean")
+mu<-(sum(A*v)*sum(C)-sum(B*v)*sum(B))/(sum(A)*sum(C)-sum(B)^2)
+teta<-(sum(B*v)*sum(A)-sum(A*v)*sum(B))/(sum(A)*sum(C)-sum(B)^2)
+h<-N/sum(A*(v-mu)^2 -2*teta*B*(v-mu)+C*teta^2)
+print(c(h,mu,teta))
+Ppc<-c(h,mu,teta)
+mvp<-mu+teta*(xbar-alpha)/(lambda^2+S*beta^2)
+hdvp<-sqrt(h*(2*g+S)*(lambda+S*beta^2))/sqrt(2*rat*((h+1)*lambda^2+S*beta^2))
+Vrp<-hdvp*(v-mvp)
+par(bg="grey90")
+layout(matrix(c(1,2,3,4),2,2))
+plot(1:length(Vrp),Vrp,"h",main="Chronologie des écarts studentisés")
+grid(nx=NULL,ny=NULL,lty=6)
+HEv<-hist(Vrp,50,plot=FALSE)
+dev<-HEv[[3]]
+ev<-HEv[[4]]
+plot(ev,dev,"h",main="Histogramme Ecarts prédictifs réduits")
+lines(ev,dnorm(ev,0,1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+Gvp<-pnorm(Vrp,0,1)
+Tepred<-FITtestS(Gvp,K)
+X<-Vrp
+HPIT<-hist(Gvp,seq(0,1,0.1),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),21),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+TTepred<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",Tepred[[2]]),3,3))
+#----------
+Vepred<-FITvalid(Vrp,mvp, 1/hdvp,brke)
+# modif de l'intervalle interquartile
+Vepred[[3]][5,1]<-sd(y)*(qnorm(0.75,0,1)-qnorm(0.25,0,1))
+plot(mvp,v,"p",main="regression cible-predicteur v.a réduite")
+grid(nx=NULL,ny=NULL,lty=6)
+TVepred<-matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",Vepred[[3]]),5,2)
+GVc<-pnorm(v,mean(v),sd(v))
+Dyep<-Valcal(Gvp,GVc,K)
+Hy<- Dyep[[1]]
+Hyv<- Hy[1,]
+Hyc<- Hy[2,]
+layout(c(1))
+plot(seq(1/K,1,1/K),Hyv,"h",lwd=3,col="blue",main="comparaison PRED-CALAGE")
+lines(seq(1/K,1,1/K),Hyc,"l",lwd=3,col="red")
+lines(seq(0,1,1/K),rep(N/K,K+1),"l",lwd=5,col="green")
+grid(nx=NULL,ny=NULL,lty=6)
+TTvc<-as.data.frame(matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3))
+#---------
+TTepred
+TVepred
+TTvc
+layout(c(1))
+hist(Vepred[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+MZ1Z2<-BFSjac(y,u,w,alpha,beta,g,lambda)
+MZ1<-MZ1Z2[[2]]
+MZ2<-MZ1Z2[[3]]
+layout(c(1,2))
+hist(MZ1,50,main="Histogramme Z1")
+grid(nx=NULL,ny=NULL,lty=6)
+hist(MZ2,50,main="Histogramme Z2")
+grid(nx=NULL,ny=NULL,lty=6)
+```
+
+## Commentaires 
+
+Une des propriétés importantes du BFS est le respect du calibrage des prédictives. Pour respecter au mieux le caractère bayesien de la procédure il faut que les marges de l'ensemble{X,Z,Y} soient respect2es, par exemple en utilisant les NQT ce qui assure "l'encapsulage" des marges. Pour aller dans ce sens, nous avons traité directement la conditionnelle prédictive [Y|X] précédente non pas sur les cibles y mais sur les valeurs centrées, réduite (y-mean(y))/sd(y). Le chunk ci dessus donne les estimations de:
+h,mu, teta soit le vecteur c(1.548,-0.004,6.315)
+On remarquera "l'intercept" quasiment nul. Cette fois le diagramme est nettement mieux représenté avec une crédibilité de 63 % nettement améliorée. De plus le CRPS marque une amélioration trs significative passant de 0.83 à 0.54
+
+
+
+s bayesiens par les pluies (modèles Bernoulli-Gamma ou fuites généralisées) où nos applications ont déja montré des comportements semblables.
+De plus les données CEP ont des comportements à dire biaisés en dispersion. Les modèles échangeables demandent à être validés sur d'autres données (canadiennes entre autres)
+
+## Test et Validation de la STRUCTURE BFS sur 2012
+
+```{r }
+NRM<-1000 
+yv<-validat[,1]
+xbarv<-validat[,2]
+v2v<-validat[,3]
+v<-(yv-mean(yv))/sd(yv)
+w<-v2v
+u<-xbarv
+N=length(yv)
+Z1<-matrix(NA,N,NRM)
+Z2<-matrix(NA,N,NRM)
+rat<-matrix(NA,N)
+for(r in 1:N) {
+  rat[r]<-1+25*(49*w[r]/(50*lambda^2)+(u[r]-alpha)^2/(lambda^2+50*beta^2))
+  Z2[r,]<-rgamma(NRM,g+25,rat[r])
+  Z1[r,]<-rnorm(NRM,beta*(xbarv[r]-alpha)/(lambda^2+50*beta^2) ,lambda/sqrt(Z2[r,]*(lambda^2+50*beta^2)))
+}
+A<-apply(Z2,1,"mean")
+B<-apply(Z2*Z1,1,"mean")
+C<-apply(Z2*Z1^2,1,"mean")
+D<-apply(Z1,1,"mean")
+mu<-(sum(A*v)*sum(C)-sum(B*v)*sum(B))/(sum(A)*sum(C)-sum(B)^2)
+teta<-(sum(B*v)*sum(A)-sum(A*v)*sum(B))/(sum(A)*sum(C)-sum(B)^2)
+h<-N/sum(A*(v-mu)^2 -2*teta*B*(v-mu)+C*teta^2)
+Ppc<-c(h,mu,teta)
+print(Ppc)
+mrp<-Ppc[2]+Ppc[3]*D
+sdrp<-1/sqrt(Ppc[1]*A)
+Vrp<-(v-mrp)/sdrp
+par(bg="grey90")
+layout(matrix(c(1,2,3,4),2,2))
+HEY<-hist(Vrp,50,plot=FALSE)
+dey<-HEY[[3]]
+ey<-HEY[[4]]
+plot(ey,dey,"h",main="Histogramme Ecarts prédictifs réduits")
+lines(ey,dnorm(ey,0,1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+Gvp<-pnorm(Vrp,0,1)
+Tepred<-FITtestS(Gvp,K)
+X<-Vrp
+HPIT<-hist(pnorm(Vrp,0,1),seq(0,1,1/K),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="*frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),K+1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+TTepred<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",Tepred[[2]]),3,3))
+#----------
+Vepred<-FITvalid(v,mrp,sdrp,brke)
+# modif de l'intervalle interquartile
+Vepred[[3]][5,1]<-sd(yv)*(qnorm(0.75,0,1)-qnorm(0.25,0,1))
+TVepred<-matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",Vepred[[3]]),5,2)
+#plot(mu+teta*D,v,"p",main="regression cible-predicteur v.a réduite")
+plot(D,v,"p",main="regression cible-predicteur v.a réduite")
+grid(nx=NULL,ny=NULL,lty=6)
+GVc<-pnorm(v,mean(v),sd(v))
+Dyep<-Valcal(Gvp,GVc,K)
+Hy<- Dyep[[1]]
+Hyv<- Hy[1,]
+Hyc<- Hy[2,]
+plot(seq(1/K,1,1/K),Hyv,"h",lwd=3,col="blue",main="comparaison PRED-CALAGE")
+lines(seq(1/K,1,1/K),Hyc,"l",lwd=3,col="red")
+grid(nx=NULL,ny=NULL,lty=6)
+TTvc<-matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3)
+#---------
+TTepred
+TVepred
+TTvc
+layout(c(1))
+hist(Vepred[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+```
+### Commentaire
+
+Les résultats de ce chunk de validation sur les données de 2012 avec cependant tous les paramètres marginaux et prédictifs calculés sur 2005-2008 confirment le bon comportement, selon nos méthodes; tests bayesiens + CRPS notamment, du modèle bayesien échangeable complet, c'est à dire calé en marginal et prédictif selon les principes BFS. Notre comparaison est aussi complète puisqu'elle inclut (voir l'annexe ci après) des méthodes ayant la faveur de nombreux spécialistes comme la BMA qui n'est pas bayesienne dans le contexte des membres "coopératifs". Dans cette comparaison, pour moi, il n'y a pas "photo" , les méthodes d'inspiration complètement bayesiennes l'emportent aisément et ne devraient plus être (à l'époque i-statisticienne moderne) d'application difficile au point d''en effrayer les praticiens.                                    
+
+Il est vrai que la tâche à entreprendre est très dure et dépasse mes moyens limités quand on lit des affirmations péremptoires de spécialistes éminents que je rappelle parce qu'elles me choque: "There appears to be universal agreement, both in **Bayesian** and non-Bayesian communities, that the assessment of predictive distributions requires **frequentist thinking**
+
+Pour moi dans la suite, je souhaite continuer l'illustation des modèles d'ensembles échangeable
+Nous avons aussi appliqué la procédure statistique précédente à un des favoris de la littérature-prévisions d'ensemble : la méthode BMA (best members averaging), basée sur le principes des membres compétitifs, et appliquée à de multiples grandeurs méteorologiques (températures, pluies_bernoulliGamma, etc...)
+L'analyse ci dessous comporte les deux chunks habituels: 1:ajustement (par le package ensembleBMA)+Test_d'ajustement, 2:validation en prévision
+
+Disons d'emblée que les résultats illustrent bien le théorème de Statistique Décisionnelle (Wald 1950), le --théorème de la classe complète-- qui démontre que toute règle de décision- prévision mobilisant des membres individuels même classés est dite inadmissible c'est à dire dominée en termes de coûts d'erreurs par une règle bayesienne mobilisant l'ensemble des membres.
+ Comme le theorème de deFinetti, le théorème de la classe complète (1950) ne peut, bien sûr, être supposé connu des praticiens de la prévision.
+ 
+                    # -----------------
+                    # -----------------
+
+
+                                # ANNEXE :Modèle BMA 
+## BMA : 1-Estimation
+
+```{r }
+library(ensembleBMA)
+library(chron)
+y<-apprenti[,1]
+N<-length(y)
+x<-MEA[seq(1,dim(MEA)[1],3),]
+obs<-y
+datacep<-ensembleData(x, observations = obs, forecastHour=12,initializationTime = "00")
+DATES<-ymdhTOjul(c("2012050112","2012050212"),origin=c(month=1,day=1,year=2012))
+CC<-dateCheck(c("20120501", "20120502"))
+cond<-if_else(CC==TRUE,1,0)
+modBma<-fitBMAnormal(datacep, control = controlBMAnormal(), exchangeable = c(1:50))
+Bcoef<-modBma[[1]]
+sdm<-modBma[[2]]
+ponds<-modBma[[3]]
+SCORprop<-CRPS(modBma,datacep)
+# Paramètres prédictifs (indice p) -------
+X0<-t(x)
+C<-sdm
+ff<-matrix(NA,50,length(y))
+for(k in 1:50){
+ff[k,]<-Bcoef[1,k]+Bcoef[2,k]*X0[k,] 
+}
+PONDS<-matrix(ponds,50,length(y))
+mvp<-apply(PONDS*ff,2,"sum")
+sdvp<-rep(C,N)
+Yrp<-(y-mvp)/sdvp
+Gvp<-pnorm(y,mvp,sdvp)
+HYrp <-hist(Yrp,50,plot=FALSE)
+dy<-HYrp[[3]]
+ay<-HYrp[[4]]
+layout(matrix(c(1,2,3,4),2,2))
+par(bg="grey90")
+plot(ay,dy,"h",main="histogramme de la cible")
+lines(ay,dnorm(ay,0,1),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+Hp<-hist(Yrp,50,plot=FALSE)
+dp<-Hp[[3]]
+ap<-Hp[[4]]
+plot(ap,dp,"h",main="histogramme du Predictif")
+lines(ap,dnorm(ap,mean(Yrp),sd(Yrp)),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+v<-(y-mean(y))/sd(y)
+plot(Yrp,v,"p",main="regression cible-predicteur")
+lines(Yrp,Yrp,"l",col="red")
+grid(nx=NULL,ny=NULL,lty=6)
+CEbma<-matrix(c("correl",cor(y,Yrp),"Ecart-type residu",sd(y-Yrp)),2,2)
+kable(CEbma)
+```
+
+### Commentaires sur 22
+
+"no dates specified[1] " indique la console. Bien entendu ce rapport traite des propriétés statistiques sur échantillons. En dehors de calculs de critères sur échantillons, nous n'avons pas étudié le cas d'évènements particuliers (souci pragmatique du package BMA)
+
+Ce résultat suppose l'échangeabilité des membres 
+Ces résultats (confirmés par les tests ci après) illustrent une propriété statistique très importante. Dans leur méthode BMA, Raftery et al. n'utilisent l'échangeabilité que comme impliquant l'identité des paramètres de leur modèle. Mais l'échangeabilité est une hypothèse beaucoup plus forte impliquant l'existence de pivots ou statistiques résumantes comme Xbar et donc de modèles plus efficaces. Ceci est contenue dans les conséquences du théorème de représentation de deFinetti, Hewitt, Savage que beaucoup de statisticiens eminents modernes ont bien tord de négliger.
+
+###  BMA 2- Tests et Validation.
+
+```{r }
+Tbma<-(y-mvp)/sdvp
+N<-length(Tbma)
+dfTbma<-dnorm(Tbma,0,1)
+# Inference et tests ------
+par(bg="Grey90")
+GYp<-pnorm(y,mvp,sdvp)
+TTabma<-FITtestS(GYp,20)
+layout(matrix(c(1,2,3,4),2,2))
+plot(ap,dp,"h",main="histogramme du Predictif")
+lines(ap,dnorm(ap,mean(Yrp),sd(Yrp)),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+pTbma<-pnorm(Tbma,0,1)
+HPIT<-hist(pTbma,seq(0,1,1/K),plot=FALSE)
+ch<-HPIT[[2]]
+lh<-HPIT[[4]]
+plot(lh,ch, "h",main="Histogramme PIT",xlab="classes",ylab="frequences",col="blue",lwd=5)
+lines(seq(0,1,1/K),rep(mean(ch),21),"l",col="red",lwd=5)
+grid(nx=NULL,ny=NULL,lty=6)
+TTtabbma<-as.data.frame(matrix(c("CRAMERVM","CHI2_probab","CHI2_credib",TTabma[[2]]),3,3))
+#----------Validation
+N0<-length(Tds)
+vbma<-FITvalid(y,mvp, sdvp,brke)
+Ttabbmav<-as.data.frame(matrix(c("M CRPS" ,"CV CRPS","BRIER","RIQpred","RIQcal",vcep[[3]]),5,2))
+plot(Yrp,v,"p",main="regression cible-predicteur")
+lines(Yrp,Yrp,"l",col="red")
+grid(nx=NULL,ny=NULL,lty=6)
+Dyep<-Valcal(dfTbma,pnorm(y,mean(y),sd(y)),K)
+TTvc<-matrix(c("CHI2_val","CHI2_cal",Dyep[[2]]),2,3)
+print(TTtabbma)
+print(Ttabbmav)
+print(TTvc)
+hist(vbma[[2]],50,col="black",lwd=4,main="post-histogramme bootstrap CRPS")
+grid(nx=NULL,ny=NULL,lty=6)
+```
