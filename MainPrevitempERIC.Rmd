@@ -1,0 +1,932 @@
+---
+title: 'MainPrevitemp avancement Eric'
+author: "Éric Parent pour  Jacques Bernier"
+date: "15/3/2021"
+output:
+  html_notebook
+---
+
+
+
+# Chargement préalable des données et librairies nécessaires
+
+*Ne pas oublier*, dans "session",  de faire "setworking directory" à l'endoit ou se trouve le fichier Ain@Vouglans.Rdata
+
+
+Après un calcul Jags, on stocke les resultats pour ne pas avoir à les refaire si on relance tous les chunks. Si on modifie quelque chose en Jags, supprimer ces fichiers auxilliaires.
+
+
+Je fais juste un html_notebook qui met sous forme de fichiers html le texte quand on sauve le Rmd, ca suffit en première approche et ca permet d'executer le Rmd pas à pas.
+
+```{r include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gridExtra)
+# library(tidyselect)
+# library(lubridate)
+ library(R2jags)
+ library(verification)
+ library(GGally)
+# library(MCMCpack)
+ library(goftest)
+# library(e1071)
+# library(grid)
+# library(kableExtra)
+ library(ensembleBMA)
+ library(scoringRules)
+# library(Hmisc)
+```
+
+
+Les données journalières de températures sont fournies par EDF-DTG pour l' Ain à Vouglans. On dispose des 2 *data.frames* suivants: 
+
+*  l' historique journalier sur la période 1953 à 2015 dans le *data.frame dhisto*, 
+
+* ainsi que celui des "$50$ membres du Centre Européen de Prévision" pour les années 2005 à 2008 (4 ans avec échéance de 1 à 7 jours) puis de 2O11 à 1015 (5 ans pour des prévisions jusqu'à une échéance de 9 jours) à Vouglans dans le *data.frame dtout*.
+
+```{r}
+rm(list=ls())
+# setwd("~/Documents/courbariaux/WORKLUC/TempEnsemblesNormal")
+load("Ain@Vouglans.Rdata")
+#load("Buech@Chambons.Rdata")
+#load("Drac@Sautet.Rdata")
+horizon=4
+```
+
+# Analyses de la climatologie
+
+## Un coup d'oeil sur les données  historiques
+
+Un comportement sûrement aberrant est observé en date du 2003-10-15, horsain d'un jour mais on enlèvera pour la suite l'année 2003 *complète* du fichier historique dhisto. 
+
+```{r}
+fig_clim<-dhisto %>% filter(Year!= 2003) %>% mutate(an=factor(Year)) %>%
+ggplot(aes(x = Calendaire, y= T)) + geom_point(aes( color = an),alpha=0.5, shape ='.', show.legend = FALSE)+geom_smooth(method = "gam",formula = y ~ s(x, bs="cs"))+labs(x=' Calendar days', y='Temperatures', title="Climatology at Vouglans station")
+fig_clim
+```
+
+## Changement climatique
+
+Le changement climatique est de l'ordre de 1.9 °C pour 100 ans. On considère par la suite les températures rapportées à la dernière année, l'année 2015
+
+```{r}
+fig_ChangeClim<-dhisto %>% group_by(Year) %>% summarise(T=mean(T)) %>% ggplot()+
+  aes(x=Year,y=T)+geom_point()+geom_smooth(method="lm")+#geom_smooth(method="gam")+
+  labs(y="Mean Annual Temperature",title="Temperature warming")
+fig_ChangeClim
+
+ChangementClim=lm(T~Year, data=dhisto %>% group_by(Year) %>% summarise(T=mean(T)) ) 
+
+
+fig_Clim_Change<- grid.arrange(fig_clim,fig_ChangeClim)
+fig_variation_sdt<-dhisto %>% group_by(Year) %>% summarise(T=sd(T)) %>% ggplot()+
+  aes(x=Year,y=T)+geom_point()+geom_smooth(method="lm")+#+geom_smooth(method="gam")+
+  labs(y="Temperature Annual Standard Deviation")
+fig_Clim_Change
+fig_variation_sdt
+rm(list=c("fig_clim","fig_ChangeClim","ChangementClim"))
+
+```
+
+
+
+## Calcul d'une température moyenne journalière de référence et Première analyse des données
+
+On va alors construire une température moyenne de réference lissée pour chaque jour calendaire de l'année. Pour construire ces estimateurs lissés périodiques, on *régresse*, en fonction des 4 premières harmoniques, les températures interannuelles sur la base calendaire moyenne après élimination des années bissextiles. Les températures désaisonnalisées sont appelées *T_ecart*. On ne procède pas à la regression sur les variances mais à un classement par saison. Par défaut on en distingue 2(hiver: décembre à avril, été:mai à novembre).
+
+ On doit noter que le rejet "bissextile" par la variable calendaire=366 rejette en fait la dernière observation de chaque année bissextile c'est à dire le *31 décembre*. Nous avons conservé ceci pour le calcul des valeurs climatiques ajustées (T_ref_lis)
+
+```{r}
+histo_ref<- dhisto  %>% filter(Year!= 2003, Calendaire != 366)
+base<-function(t){
+  cbind(sin(2*pi*t/365),cos(2*pi*t/365),
+        sin(2*pi*2*t/365),cos(2*pi*2*t/365),
+        sin(2*pi*3*t/365),cos(2*pi*3*t/365),
+        sin(2*pi*4*t/365),cos(2*pi*4*t/365))}
+modlin<-lm(T~ 1+base(Calendaire)+Year, data=histo_ref)
+histo_ref<-histo_ref %>% mutate(T_ref_lis=modlin$fitted.values,T_ecart=T-T_ref_lis) 
+# ---Calcul moyennes et ecart-types calendaires
+histo_ref %>% group_by(Calendaire) %>% summarise(MTecal=mean(T_ecart),SDTecal=sd(T_ecart)) -> Tecal
+T_ecart<-histo_ref$T_ecart
+N<-length(T_ecart)
+MTE<-mean(T_ecart)
+SDTE<-sd(T_ecart)
+pU_ecart<-pnorm((T_ecart-MTE)/SDTE,0,1)
+#--------
+dg0<- ggplot(histo_ref, aes(x = T_ecart)) + 
+    geom_histogram(aes(y =..density..),colour = "black", fill = "white") +
+stat_function(fun = dnorm, args = list(mean = MTE, sd = SDTE),col="red",lwd=2)+ labs(x='Temperature Deviations', y='Empirical Density', title="Seasonally adjusted Temperature ")
+#---------
+tacf<-acf(T_ecart,lag.max=15,plot=FALSE)
+btcaf <- with(tacf, data.frame(lag, acf))
+dg4 <- ggplot(data=btcaf, mapping=aes(x=lag, y=acf))+labs(title = "Daily Autocorrelation") + geom_bar(stat = "identity", position = "identity")
+
+histo_ref %>% ggplot(aes(x = 1:N, y= T_ecart)) + geom_point(shape='.')+labs(x='Days', y='Deviations', title="Daily deviations time series") -> dg1
+
+histo_ref %>% mutate(Saison=ifelse(Month %in% c(4:10), 1,0)) %>% dplyr::group_by(Saison) %>% mutate(SaisonSDT=sd(T_ecart),SaisonMT=mean(T_ecart)) %>% dplyr::ungroup() %>% as.data.frame() %>% dplyr::group_by(Calendaire) %>% dplyr::summarize( SDTecal=sd(T_ecart), MTecal=mean(T_ecart), SaisonSDT=mean(SaisonSDT),SaisonMT=mean(SaisonMT)  )->Tecaldf
+
+Tecaldf %>% ggplot(aes(x = Calendaire, y= MTecal)) + geom_point()+geom_line()+geom_line(aes(x = Calendaire, y= SaisonMT), color='red', size=1)+labs(x='Calendar days', y='Mean Deviations ', title="Interannual Means for deviations ") -> dg2
+Tecaldf %>% ggplot(aes(x = Calendaire, y= SDTecal)) + geom_point()+geom_line()+geom_line(aes(x = Calendaire, y= SaisonSDT), color='red', size=2)+labs(x='Calendar days', y='Standard Deviations', title="Interannual Sd of Temperature") -> dg3
+
+fig_marginaleX<-grid.arrange(dg1, dg0, dg3, dg4, ncol=2, nrow =2)
+fig_marginaleX
+#Un peu de nettoyage
+rm(list=c("dg0","dg1", "dg2", "dg3", "dg4"))
+rm(list=c("btcaf","tacf", "Tecal", "Tecaldf", "pU_ecart","T_ecart","modlin"))
+
+
+
+```
+*T_ecart* est la variable historique complète 1953-2015 (privée de 2003) désaisonnalisée (en moyenne), ici sans distinction de saison.
+On notera la forte autocorrélation journalière ainsi que la variation calendaire des écart-types journaliers résiduels.
+
+
+# Etude marginale des membres de l'ensemble
+```{r}
+YX<-left_join(dtout , histo_ref) %>% 
+  dplyr::select(-Qobs,-PS)  %>% 
+mutate(Xbar=rowMeans(dplyr::select(.,starts_with("Run"))),
+             V2=apply(dplyr::select(.,starts_with("Run")),1,var)) %>% 
+filter(!is.na(Xbar+V2+T+Obs)) 
+#sum(YX$T!=YX$Obs)
+#YX %>% glimpse
+fig_illustration <-YX %>% filter(Year==2005, Calendaire %in% 190:(213), Echeance==4) %>% 
+  dplyr::select(Date,T,Xbar,V2) %>% 
+  mutate(ymin=Xbar-2*sqrt(V2),ymax=Xbar+2*sqrt(V2)) %>% 
+  ggplot(aes(x=Date))+geom_line(aes(y=Xbar))+geom_point(aes(y=T), size=2, col="red")+
+  geom_ribbon(mapping = aes(ymin=ymin,ymax=ymax), alpha=0.3, fill="grey")+
+  labs( y="Temperature")+theme(legend.position=NULL) 
+
+fig_illustration
+
+regul <- function(x) (x - YX$T_ref_lis)
+YX %>%  mutate_at(vars(matches("Run")),regul) %>% 
+  mutate_at(c("T","Xbar"),regul) %>% filter(Echeance==4) %>% 
+dplyr::select(T,Xbar,starts_with("Run")) %>%
+  cor()->cc
+mean(cc[2,-(1:2)])
+rm(list=c("dhisto","dtout","cc","histo_ref"))
+
+```
+## Création de la base de données de travail apprentissage et validation
+
+On stationnarise TOUTES les variables du tibble YX pour créer les grandeurs sur lesquelles travailler dans  le tibble d
+
+```{r}
+ete<-c(5:11)
+d<-YX %>%  mutate_at(vars(matches("Run")),regul)  %>% filter(Echeance==horizon, Month %in% ete) %>% #dplyr::select(!starts_with("Run"),-Echeance) %>%
+  mutate(y=T_ecart, x=Xbar-T_ref_lis, v2=V2, jeu=ifelse(Year<2010, yes="apprentissage",no="test")) %>% dplyr::select(-T,-T_ecart,-Xbar,-V2) %>% dplyr::select(-Echeance) %>% relocate(starts_with("Run"),.after = "jeu")
+head(d)
+```
+
+
+## Structure des données par analyse en composantes principales
+
+Cette analyse est importante car elle permet un jugement sur l'hypothèse échangeable.
+L'e travail 'ACP est réalisé sur les variables non stationnarisées extraites à partir du tibble YX, pour l'été de toutes les années à l'horizon 4 jours.
+
+```{r}
+Eas<-YX %>%  # mutate_at(vars(matches("Run")),regul) %>%
+  filter(Echeance==horizon,Month %in% c(4,10) ) %>%  dplyr::select(contains("Run"))
+#Eas=Eas-(YX %>% filter(Echeance==horizon,Month %in% c(4,10)) %>% pull(T_ref_lis))
+MeanY<- mean(YX %>%
+  filter(Echeance==horizon,Month %in% c(4,10) ) %>% pull(Obs))
+StdY<- sd(YX %>%
+  filter(Echeance==horizon,Month %in% c(4,10) ) %>% pull(Obs))
+S=dim(Eas)[2]
+ACP<-princomp(Eas,cor=TRUE,scores=TRUE)
+ACPfirst<-data.frame(qui=1:S,sdF=ACP$sdev,PoidsMembres=ACP$loadings[,1],
+        MA=apply(Eas,2,"mean") , SdA=apply(Eas,2,"sd")) %>% 
+  mutate(Inert = sdF*sdF/sum(sdF*sdF),
+         InertBis=Inert*ifelse(qui==1,0,100))
+dga<-ACPfirst %>% #filter(qui<10) %>%
+  ggplot(aes(x=qui,y=Inert))+geom_bar(stat="identity")+
+  geom_bar(aes(y=InertBis), stat="identity",fill="grey")+
+  labs(y="Inertia",x="Order of Eigenvalues", title="(A): Scaled eigenvalues")
+
+ dgb<- ACPfirst %>% #filter(qui<10) %>%
+  ggplot(aes(x=qui,y=PoidsMembres))+geom_point()+geom_line()+ylim(0.135,0.15)+
+ #+geom_bar(stat="identity")+
+  labs(y="Weight in first PCA",x="Members", title="(B): Member Weights") 
+ 
+  dgc<-ACPfirst %>% #filter(qui<10) %>%
+  ggplot(aes(x=qui,y=MA))+geom_point()+geom_line()+
+    geom_hline(yintercept=MeanY, col='red')+ylim(10,12)+
+  labs(y="Mean",x="Members", title="(C): Member Means") 
+  
+dgd<-ACPfirst %>% #filter(qui<10) %>%
+  ggplot(aes(x=qui,y=SdA))+geom_point()+geom_line()+
+  geom_hline(yintercept=StdY, col='red')+ ylim(3,4.5)+
+  labs(y="Standard deviation",x="Members", title="(D): Member Standard Deviations") 
+
+fig_acp<-grid.arrange(dga,dgb,dgc,dgd)
+fig_acp
+rm(list=c("dga","dgb","dgc","dgd","Eas","ACP","ACPfirst","MeanY","StdY"))
+
+```
+
+La première figure représente l'inertie des 10 premiers facteurs rangés par ordre de grandeur.La première composante pèse 96,3% de l'inertie totale. Pour faire apparaître les suivantes nous les avons multipliés par 100, en noir sur la figure. On voit le très grand poids de cette première composante.
+
+Les figures suivantes donnent, pour la seconde, le poids de chacun des 50 membres dans l'expression de cette composante très dominante. Il est clair que ces poids sont très sensiblement égaux ce qui signifie que cette composante est très proche de la moyenne d'ensemble Xbar. Les dernières figures montrent que les moyennes marginales de chaque membre sont assez semblables (quoique biaisées négativement par rapport à la variable cible)  de même que les écart-types (quoique sous estimés par rapport à la variabilité naturelle de la cible); cette symétrie entre les premières caractéristiques statistiques des membres va dans le sens de l'acceptabilité de l'hypothèse d'échangeabilité pour le modèle d'ensemble.
+
+
+## Post-traitement EMOS échangeable
+
+Réalisons le calage du modèle EMOS échangeable
+
+$$y_t=a+b\times x_t +\sigma_t \varepsilon_t \\
+  \sigma_t^2= c+d\times v_t^2\\
+  \varepsilon_t \sim_{iid} \mathcal{N}(0,1)$$
+
+```{r EMOSe}
+calage<-d %>% filter(jeu=="apprentissage")
+S=50
+#---------------------
+modelEMOS <- "
+model{
+# priors vagues
+a ~ dunif(-5,5)
+b ~ dunif(-5,5)
+c ~ dunif(0,5)
+d ~ dunif(0,5)
+
+# Observations
+for (t in 1:N) { moy[t]<-a+b*xbar[t]
+                vari[t]<-c+d*v2[t]
+                y[t] ~ dnorm(moy[t],preci[t]) 
+                preci[t]<-1/vari[t]
+                }
+}
+"
+bugsdata<-list(xbar=calage$x,
+             v2=calage$v2,
+             N=length(calage$v2),
+             y=as.numeric(scale(calage$y)))
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+inits1<-list(a=0,b=1,c=0,d=1)
+inits2<-list(a=0,b=1.1,c=1,d=.9)
+inits3<-list(a=-1,b=2,c=2,d=0.5)
+
+if(!file.exists("outemos.RData")) {
+modele <- jags.model(file=textConnection(modelEMOS), data=bugsdata, 
+                    inits=list(inits1, inits2,inits3),
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+
+variable.names=c("a","b","c","d")
+out <- coda.samples(model=modele,
+                    variable.names=variable.names, 
+                    n.iter=n.iter,thin=n.thin)
+save(out,file = "outemos.RData")
+                                }
+load("outemos.RData")
+STAT<-summary(out)
+```
+
+```{r}
+gelman.plot(out)
+ggmcmc::ggs_density(ggmcmc::ggs(out))
+
+out123<-rbind(purrr::pluck(out,1),
+              purrr::pluck(out,2),
+              purrr::pluck(out,3))%>% 
+  as.data.frame()
+out123 %>%   
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5,fill='blue') +
+  facet_wrap(param~., scales = "free")
+
+means123<-apply(out123,2,mean) 
+a_hat=means123[1]
+b_hat=means123[2]
+c_hat=means123[3]
+d_hat=means123[4]
+
+ggpairs(out123)
+
+rm(list=c("out","out123", "means123","modelEMOS","STAT","n.burn","n.iter","n.thin", "n.chains"))
+```
+
+On trouve que $a,b,c,d$ sont estimés plutôt précisément et on négligera leur variabilité par la suite. La contribution de la variance des membres à la variance prédictive est drôlemebnt faible (cf coefficient $d \approx 0.05$!)
+
+## Calage de la loi marginale de x
+
+```{r}
+calage<-d %>% filter(jeu=="apprentissage")%>% dplyr::select(-jeu)
+S=50
+#---------------------
+model2pivots <- "
+model{
+demiddl<- (S-1)/2
+# priors vagues
+alpha ~ dunif(-5,5)
+beta ~ dunif(0.01,20)
+lambda ~ dgamma(0.01,0.01)
+g ~ dgamma(0.1,0.1)
+# latentes
+for (t in 1:N) {Z2[t]~ dgamma(g,1)
+                Z1[t] ~ dnorm(0,Z2[t]) #la precision est Z2
+                
+# Observations
+                moy[t]<-alpha+beta*Z1[t]
+                preci[t]<-Z2[t]*S/lambda/lambda
+                xbar[t] ~ dnorm(moy[t],preci[t]) 
+                b[t]<-demiddl/lambda/lambda*Z2[t]
+                v2[t] ~ dgamma(demiddl,b[t])
+                }
+}
+"
+bugsdata<-list(xbar=calage$x,
+             v2=calage$v2,
+             N=length(calage$v2),
+             S=S)
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+inits1<-list(alpha=.1,beta=6,lambda=1, g=2)
+inits2<-list(alpha=-.1,beta=5,lambda=1.1, g=3)
+inits3<-list(alpha=.1,beta=4,lambda= 1.2, g=2)
+
+if(!file.exists("outx.RData")) {
+modele <- jags.model(file=textConnection(model2pivots), data=bugsdata, 
+                    inits=list(inits1, inits2,inits3),
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+
+variable.names=c("alpha","beta","lambda","g")
+out <- coda.samples(model=modele,                                       variable.names=variable.names, 
+                    n.iter=n.iter,thin=n.thin)
+save(out,file = "outx.RData")
+                                }
+load("outx.RData")
+STAT<-summary(out)
+```
+
+On peut regarder la dispersion de ces évaluations bayésiennes des paramètres de la marginale de $X$
+```{r}
+gelman.plot(out)
+out123<-rbind(purrr::pluck(out,1),
+              purrr::pluck(out,2),
+              purrr::pluck(out,3))%>% 
+  as.data.frame()
+out123 %>%   
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5,fill='blue') +
+  facet_wrap(param~., scales = "free")
+
+means123<-apply(out123,2,mean)
+alpha_hat=means123[1]
+beta_hat=means123[2]
+g_hat=means123[3]
+lambda_hat=means123[4]
+
+ggpairs(out123)
+#knitr::kable(STAT$statistics, format="latex", digits=2)
+
+#ggmcmc::ggs_pairs(ggmcmc::ggs(out))
+
+rm(list=c("out","out123", "means123","model2pivots","STAT","n.burn","n.iter","n.thin", "n.chains"))
+```
+Les estimations déterministes sont stockées dans les variables alpha_hat,beta_hat, g_hat, lambda_hat: `r knitr::kable(c(alpha_hat,beta_hat, g_hat, lambda_hat)) `.
+
+## Examen de la marginale en X
+
+On vérifie le bon ajustement Student et Fisher sur les statistiques de la loi marginale
+
+```{r examMarginaleX, message=FALSE, warning=FALSE}
+k= as.numeric(sqrt((beta_hat^2+(lambda_hat^2)/S)/(lambda_hat^2)))
+g1<-calage %>% mutate(Student=(x-alpha_hat)/k/sqrt(v2)) %>% ggplot(aes(x=Student))+geom_histogram(aes(y =..density..),colour = "black", fill = "white") +
+stat_function(fun = dt, args = list(df =S-1),col="red",lwd=2)+ labs(x='Studentized Temperature ensemble', y='Empirical Density')+xlim(-4,4)
+
+g2<-calage %>% mutate(Fisher=(g_hat)*(v2)/lambda_hat^2) %>% ggplot(aes(x=Fisher))+geom_histogram(aes(y =..density..),colour = "black", fill = "white") +
+stat_function(fun = df, args = list(df1 =S-1, df2=2*g_hat),col="red",lwd=2)+ labs(x='Fisher-transformed variance of the ensemble', y='Empirical Density')+xlim(0,7)
+fig_check_margex <- grid.arrange(g1,g2)
+fig_check_margex 
+rm(list=c("g1","g2"))
+```
+
+
+
+## BFS predictif via jags
+
+### Calculs formels
+
+Le calcul de $Z|X$ est explicite par conjugaison. En effet, conservons les termes en $Z$ dans le calcul de  $log[Z,X]=log(X|Z)+log(Z)$.
+\begin{eqnarray*}
+log[X=(\bar{x},V^2)|Z]= -0.5 S\times \frac{Z_2}{\lambda^2}(\alpha+\beta Z_1-\bar{x})^2
++ 0.5 logZ_2 \\
+-Z_2(\frac{S-1}{2}\frac{V^2}{\lambda^2})+\frac{S-1}{2}logZ_2
+\end{eqnarray*}
+
+puisque $$\bar{X} \sim  N(\alpha+\beta Z_1,(SZ_2/\lambda^2)^{-1}\\
+V^2 \sim \Gamma(\frac{S-1}{2},\frac{S-1}{2}\frac{Z_2}{\lambda^2})$$
+
+De même $$log[Z]=  -0.5 \times Z_2Z_1^2+ 0.5 \times logZ_2+\\
+(g-1)\times log(Z_2)-Z_2\times r$$
+
+puisque $$Z_1 \sim  N(0,Z_2^{-1})\\
+Z_2 \sim \Gamma(g,r=1) $$
+
+En regroupant les deux expressions:
+$$log[X,Z]= -0.5 Z_2\times (\frac{S\beta^2+\lambda^2}{\lambda^2}) Z_1^2-2 \frac{S\beta}{\lambda^2}Z_1 (\bar{x}-\alpha))\\
++ 0.5 LogZ_2 \\-Z_2(r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}\frac{S}{\lambda^2}) \\
+(g-1+0.5+\frac{S-1}{2})\times log(Z_2)$$
+
+On constate donc que 
+$Z_1|X,Z_2$ est une loi normale de variance et de moyenne:
+$$V(Z_1|X,Z_2)= Z_2^{-1}(\frac{S\beta^2+\lambda^2}{\lambda^2})^{-1}=\frac{\lambda^2}{S\beta^2+\lambda^2}Z_2^{-1}\\
+E(Z_1|X)= \frac{S\beta}{S\beta^2+\lambda^2}(\bar{x}-\alpha)$$
+
+Poursuivant le calcul en complétant le carré pour calculer la marginale conditionnelle $Z_2|X$ sous forme d'une gamma(g',r'), il vient 
+
+$$log[X,Z]= -0.5 Z_2\times ((\frac{S\beta^2+\lambda^2}{\lambda^2}) Z_1^2-2 \frac{S\beta}{\lambda^2}Z_1 (\bar{x}-\alpha))\\
+-0.5 Z_2 (\frac{S\beta}{\lambda^2})^2(\bar{x}-\alpha)^2 (\frac{\lambda^2}{S\beta^2+\lambda^2})+ 0.5 LogZ_2 \\ +0.5 Z_2 (\frac{S\beta}{\lambda^2})^2(\bar{x}-\alpha)^2 (\frac{\lambda^2}{S\beta^2+\lambda^2})
+\\-Z_2(r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}\frac{S}{\lambda^2}) \\
+(g-1+\frac{S}{2})\times log(Z_2)$$
+Soit $$log[Z_2|X]= (g-1+\frac{S}{2})\times log(Z_2) \\ + Z_2 \frac{S}{2\lambda^2} (\bar{x}-\alpha)^2 (\frac{S\beta^2}{S\beta^2+\lambda^2})
+\\-Z_2(r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}
+\frac{S}{\lambda^2}) $$
+
+Soit $Z_2|X\sim \Gamma(g',r')$ avec 
+$$g'= (g+\frac{S}{2})  \\r'=r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+\frac{(\bar{x}-\alpha)^2}{2}
+\frac{S}{\lambda^2}-\frac{S}{2\lambda^2} (\bar{x}-\alpha)^2 (\frac{S\beta^2}{S\beta^2+\lambda^2}) \\
+r'= r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+
+\frac{S}{2}\frac{(\bar{x}-\alpha)^2}{S\beta^2+\lambda^2}$$
+
+                 
+
+### Calculs Jags et autres pour inférer les coefficients de $Y|Z$
+
+On peut utiliser Jags pour estimer $\mu$, $\theta$ et $h$ en disant que la marge $X$ et ses coefficients sont connus.
+```{r}
+modelpredictif2pivots <- "
+model{
+demiddl<- (S-1)/2
+# priors vagues
+mu ~ dunif(-10,10)
+theta ~dunif(-40,40)
+h ~ dgamma(0.01,0.01)
+
+
+for (t in 1:N) {
+# latentes
+                Z2[t]~ dgamma(g,1)
+                Z1[t] ~ dnorm(0,Z2[t]) #la precision est Z2
+                
+# Observations en X
+                moyx[t]<-alpha+beta*Z1[t]
+                precix[t]<-Z2[t]*S/lambda/lambda
+                xbar[t] ~ dnorm(moyx[t],precix[t]) 
+                b[t]<-demiddl/lambda/lambda*Z2[t]
+                v2[t] ~ dgamma(demiddl,b[t])
+                
+# Observations en Y
+                moyy[t]<-mu+theta*Z1[t]
+                preciy[t]<-Z2[t]*h
+                y[t] ~ dnorm(moyy[t],preciy[t]) 
+               }
+}
+
+"
+bugsdata<-list(xbar=calage$x,
+             v2=calage$v2,
+             N=length(calage$v2),
+             S=50,
+             alpha=alpha_hat,
+             beta=beta_hat,
+             g=g_hat,
+             lambda=lambda_hat,
+             #y= calage$y)
+             y=(calage$y-mean(calage$y))/sd(calage$y))
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+inits1<-list(mu=.5,theta=6,h=1)
+inits2<-list(mu=.4,theta=5,h=1.1)
+inits3<-list(mu=.2,theta=4,h= 1.2)
+
+if(!file.exists("outyx.RData")) {
+modele <- jags.model(file=textConnection(modelpredictif2pivots), data=bugsdata, inits=list(inits1, inits2,inits3),
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+
+variable.names=c("mu","theta","h")
+out <- coda.samples(model=modele,                                       variable.names=variable.names, 
+               n.iter=n.iter,thin=n.thin)
+save(out,file = "outyx.RData") 
+                                 }
+load("outyx.RData")
+STAT<-summary(out)
+
+```
+
+L'incertitude a posteriori
+```{r}
+gelman.plot(out)
+out123<-rbind(purrr::pluck(out,1),
+              purrr::pluck(out,2),
+              purrr::pluck(out,3))%>% 
+  as.data.frame()
+out123 %>%   
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5,fill='blue') +
+  facet_wrap(param~., scales = "free")
+
+means123y<-apply(out123,2,mean)
+h_hat_XY=means123y[1]
+mu_hat_XY=means123y[2]
+theta_hat_XY=means123y[3]
+
+ggpairs(out123)
+
+#knitr::kable(STAT$statistics, format="latex",dig=2)
+```
+
+Les résultats appelés h_hat_XY,  mu_hat_XY, theta_hat_XY ne sont guère différents de ceux obtenus par un algorithme type EM et simulation pour réaliser cette inférence
+
+```{r}
+InferParEM= function(alpha=alpha_hat, beta=beta_hat,lambda=lambda_hat,g=g_hat,
+                     u= calage$x,
+                     v=(calage$y-mean(calage$y)) / sd(calage$y),
+                     #v=calage$y,
+                     w=calage$v2){
+NRM<-1000 
+N=length(u)
+Z1<-matrix(NA,N,NRM)
+Z2<-matrix(NA,N,NRM)
+for(r in 1:N) {
+  Z2[r,]<-rgamma(NRM,g+25,rate=1+0.5*S*((S-1)*w[r]/(S*lambda^2)+
+                                  (u[r]-alpha)^2/(lambda^2+S*beta^2)))
+  Z1[r,]<-rnorm(NRM,S*beta*(u[r]-alpha)/(lambda^2+S*beta^2),
+                lambda/sqrt(Z2[r,]*(lambda^2+S*beta^2)))
+}
+A<-apply(Z2,1,"mean")
+B<-apply(Z2*Z1,1,"mean")
+C<-apply(Z2*Z1^2,1,"mean")
+D<-apply(Z1,1,"mean")
+mu<-(sum(A*v)*sum(C)-sum(B*v)*sum(B))/(sum(A)*sum(C)-sum(B)^2)
+teta<-(sum(B*v)*sum(A)-sum(A*v)*sum(B))/(sum(A)*sum(C)-sum(B)^2)
+h<-N/sum(A*(v-mu)^2 -2*teta*B*(v-mu)+C*teta^2)
+return(list(mu=mu,theta=teta,h=h, 
+            Z1=D, Z2=A,
+            ypred= mu+teta*D,
+            spred= (h*A)^-0.5))}
+
+ll=InferParEM()
+
+h_hat=ll$h
+mu_hat=ll$mu
+theta_hat=ll$theta
+mean(ll$spred)
+
+data.frame(y=(calage$y-mean(calage$y)) / sd(calage$y),
+           ypred= ll$ypred) %>%
+  ggplot(aes(x=y, y=ypred))+ geom_point()+geom_abline(intercept=0, slope=1)
+
+# means123y
+data.frame(y=(calage$y-mean(calage$y)) / sd(calage$y),
+           ypred= mu_hat_XY+theta_hat_XY*ll$Z1) %>%
+  ggplot(aes(x=y, y=ypred))+ geom_point()+geom_abline(intercept=0, slope=1)
+
+data.frame(y=(calage$y-mean(calage$y)) / sd(calage$y),
+           Z1=ll$Z1, Z1theo= (calage$x-alpha_hat)*S*beta_hat/(S*beta_hat^2+lambda_hat^2)) %>%
+  ggplot(aes(x=Z1, y=Z1theo))+ geom_point()+geom_abline(intercept=0, slope=1)
+
+```
+
+On adoptera par la suite ces  résultats appelés h_hat,  mu_hat, et theta_hat. Mais on peut également passer à un programme BUGS les moyennes de $Z1|X$ et $Z2|X$ pour faire une inférence équivalente, comme on le verra par la suite. Les résultats sont stockés dans h_bis,
+mu_bis et theta_bis
+
+```{r}
+
+modelpredictif2pivotsBis <- "
+model{
+# priors vagues
+mu ~ dunif(-10,10)
+theta ~dunif(-150,150)
+h ~ dgamma(0.01,0.01)
+
+
+for (t in 1:N) {
+# Observations en Y
+                moyy[t]<-mu+theta*Z1[t]
+                preciy[t]<-Z2[t]*h
+                y[t] ~ dnorm(moyy[t],preciy[t]) 
+               }
+}
+"
+bugsdata<-list(Z1=ll$Z1,
+               Z2=ll$Z2,
+              N=length(ll$Z1),
+              y= (calage$y-mean(calage$y))/sd(calage$y)
+              )
+             
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+inits1<-list(mu=.5,theta=60,h=1)
+inits2<-list(mu=.4,theta=50,h=1.1)
+inits3<-list(mu=.2,theta=-4,h= 1.2)
+
+if(!file.exists("outyxbis.RData")) {
+modele <- jags.model(file=textConnection(modelpredictif2pivotsBis), data=bugsdata, inits=list(inits1, inits2,inits3),
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+variable.names=c("mu","theta","h")
+out <- coda.samples(model=modele,                                       variable.names=variable.names, 
+               n.iter=n.iter,thin=n.thin)
+save(out,file = "outyxbis.RData") 
+                                 }
+load("outyxbis.RData")
+STAT<-summary(out)
+STAT$statistics[,1]
+h_bis=STAT$statistics[1,1]
+mu_bis=STAT$statistics[2,1]
+theta_bis=STAT$statistics[3,1]
+
+gelman.plot(out)
+ggmcmc::ggs_traceplot(ggmcmc::ggs(out))
+ggmcmc::ggs_density(ggmcmc::ggs(out))
+ggmcmc::ggs_pairs(ggmcmc::ggs(out))
+
+```
+
+Enfin, on peut vérifier graphiquement que tous ces estimations de $h,\mu, \theta$ donnent à peu près les mêmes résultats quant à la relation modélisée, en regardant les divers ajustements.
+
+```{r}
+calage %>% mutate(Z1=ll$Z1,Z2=ll$Z2) %>% 
+  mutate(ypred_jags = mu_hat_XY+theta_hat_XY*Z1,
+             ypred_EM= mu_hat+theta_hat*Z1,
+            ypred_meanZ1= mu_bis+theta_bis*Z1) %>% 
+  dplyr::select(y,ypred_jags,ypred_EM, ypred_meanZ1) %>%     
+  gather(-y,key=methode,value = prediction) %>% 
+  ggplot(aes(x=as.numeric(scale(y)), y=prediction))+geom_point(aes(color=methode),size=0.5)+
+  geom_abline(slope=1,intercept=0)+facet_wrap(~methode)+labs(x="Cible y centrée réduite")
+
+```
+
+Enfin un dessin de 50 points de calage pris au hasard montrant l'ajustement avec les IC à 95\%.
+
+````{r jolidessin}
+calage %>% mutate(Z1=ll$Z1,Z2=ll$Z2) %>% 
+  mutate(ypred= mu_hat+theta_hat*Z1,   
+            spred= (h_hat*Z2)^-0.5,
+         y=as.numeric(scale(y))) %>% 
+  dplyr::select(y,ypred, spred) %>% 
+filter(as.numeric(rownames(calage)) %in% sample(x=1:(length(calage$y)),size = 50, replace = F) ) %>% ggplot(aes(x=y, y=ypred))+
+  geom_segment(aes(x=y,xend=y, y= ypred-2*spred, yend=ypred+2*spred))+
+  geom_abline(aes(intercept=0, slope=1)) +geom_point(shape=19, color="red") +
+  labs(x="Target y (centered & rescaled)", y="Prediction with 95% confidence band")
+
+
+
+rm(list=c("out","out123", "means123y","modelpredictif2pivots","modelpredictif2pivotsBis","STAT","n.burn",
+          "n.iter","n.thin", "n.chains","inits1","inits2","inits3","ll","bugsdata"))
+```
+
+## BMA echangeable
+
+On recherche le max de vraisemblance du modèle BMA échangeable à trois coefficients. 
+
+$$ s^\star \sim dcat(1/S,\ldots,1/S) \\
+   y \sim \mathcal{N}(a+b\times x_{s^\star},\sigma^2)$$
+
+
+```{r bma}
+BMAvrais<-function(y=rnorm(100),x=matrix(rnorm(300),nrow = 100),
+                   a=1,b=1,sigma=1) {
+  p=dim(x)[2]
+  n=dim(x)[1]
+  Y=matrix(y,nrow=n, ncol=p)
+  L=log(apply(dnorm(Y,a+b*x,sd=sigma),1,mean))
+  return(sum(L))
+}
+x= calage %>% dplyr::select(starts_with("Run")) %>% as.matrix()
+x=x #-calage$T_ref_lis déjà fait dans d qui a donné calage
+y=as.numeric((calage$y-mean(calage$y))/sd(calage$y))
+ 
+fr<-function(u){
+  a <- u[1]
+  b <- u[2]
+  sigma <- u[3]
+ - BMAvrais(x=x,y=y,a=a,b=b,sigma=abs(sigma))
+}
+res<- optim(c(0,b_hat,1), fr)
+res$par
+a_bma=res$par[1]
+b_bma=res$par[2]
+sigma_bma=res$par[3]
+```
+On utilise la fonction optim pour trouver
+$\hat{a}_{BMA},\hat{b}_{BMA},\hat{\sigma}_{BMA}$ sur l'échantillon de calage où les membres ont été désaisonnalisés et stationnarisés. Ils valent respectivement `r c(a_bma,b_bma, sigma_bma)` . On remarque que
+
+## Validation
+
+On écrit une fonction de prédiction du BFS à 2 pivots, une pour EMOS et une pour le BMA (la simple regression de y sur xbar est un EMOS particulier privé de terme variable pour la variance).
+
+```{r}
+validation<-d %>% filter(jeu=="test") %>% dplyr::select(-jeu)
+
+previKRZ2pivot<- function(combien=1000,
+                          u= validation$x, 
+                          w=validation$v2,
+                          alpha = alpha_hat,
+                          beta = beta_hat,
+                          lambda =lambda_hat,
+                          g = g_hat,
+                          mu=mu_hat,
+                          theta=theta_hat,
+                          h=h_hat){
+NRM<-combien 
+N=length(u)
+Z1<-matrix(NA,N,NRM)
+Z2<-matrix(NA,N,NRM)
+CondYsachantX<-matrix(NA,N,NRM)
+for(r in 1:N) {
+  Z2[r,]<-rgamma(NRM,g+S/2,rate=1+S/2*((S-1)*w[r]/(S*lambda^2)+
+                                     (u[r]-alpha)^2/(lambda^2+S*beta^2)))
+  Z1[r,]<-rnorm(NRM,S*beta*(u[r]-alpha)/(lambda^2+S*beta^2),
+                lambda/sqrt(Z2[r,]*(lambda^2+S*beta^2)))
+  CondYsachantX[r,]<-mu+theta*Z1[r,]+(h*Z2[r,])^(-0.5)*rnorm(NRM)
+}
+
+return(list(meanKRZ=mu+theta*apply(Z1,1,"mean"), 
+            sdKRZ=1/sqrt(h*apply(Z2,1,"mean")),
+            meanKRZbis= apply(CondYsachantX,1,"mean"),
+            sdKRZbis= apply(CondYsachantX,1,"sd")))
+}
+
+CondYsachantX = previKRZ2pivot()
+
+#mean(crps(y = as.numeric(scale(validation$y)), family = "normal", mean = CondYsachantX$meanKRZ, sd = CondYsachantX$sdKRZ))
+#mean(crps(y = as.numeric(scale(validation$y)), family = "normal", mean = CondYsachantX$meanKRZbis, sd = CondYsachantX$sdKRZbis))
+
+
+
+
+
+
+lmbrut<-lm(y~x,data=calage %>% mutate(y=(y-mean(y))/sd(y)))
+
+
+validation %>% mutate(Model="KrzBFS", MTE=CondYsachantX$meanKRZ, STDE= CondYsachantX$sdKRZ)->vkrz
+validation %>% mutate(Model="Regres", MTE=(coef(lmbrut))[1]+ (coef(lmbrut)[2])*x, STDE= var(lmbrut$residuals)^0.5)->vreg
+validation %>% mutate(Model="EMOSE", MTE=a_hat + b_hat*x, STDE= (c_hat+d_hat*v2)^0.5)->vemos
+validation %>% mutate(Model="BMA", MTE=a_bma + b_bma*x, STDE= (sigma_bma^2+b_bma*b_bma*(S-1)/S*v2)^0.5)->vbma
+
+d_grouped2 <- rbind(vkrz,vreg,vemos,vbma) %>% as_tibble() %>% 
+      group_by(Model) %>%  nest() 
+```
+
+On dispose donc dans le tibble d_grouped2 de donnees et de loi prédictive moyenne MTE et ecart type STDE pour chaque année et chaque méthode (regression brute, EMOSE, BMA ou bien notre méthode KRZ à 2 pivots). Ces méthodes pourront être enrichies par la suite par d'autres techniques de post-traitement.
+
+## Ré-écriture  des fonctions fittest et fitvalid
+
+Ces fonctions n'en sont qu'à une version provisoire à retravailler. Il faut que leurs sorties soient sous forme de liste et non de tableaux. Ceci afin de permettre dans le chunk suivant d'être appelées par la fonction map (et ses diverses versions) du package purrr pour faire des tableaux récapitulatifs des performance en calibration et en finesse des techniques de posttraitement. (si on utilise ensuite kable, son argument format = "latex" en donne une impression récupérable directement pour coller sous overleaf)
+
+Pour diminuer l'effet des autocorrélations, Jacques propose que les statistiques et test soient calculés sur des sous-échantillons 1/N0 de valeurs de la variable traitée, appelée X en interne à la fonction. Il s'agit d'échantillons de "cibles de prevision" dont on veut tester la loi conditionnelle, à prédicteurs fixés. Pour les températures, ce sont  des lois normales. Ce sont ces sous échantillons, préalablement constitués qui sont introduits avec X....qui donc devrait s'appeler y dans nos notations.
+
+MTE et SDTE sont les moyennes et écart-types vectoriels, prédictifs calculés du vecteur X.
+N0 est la taille initiale de l'échantillon.
+
+```{r}
+fittest<-function(X=rnorm(100), MTE=rep(0,100), SDTE=rep(1,100) ,N0=3,K=20) {
+#X  observation, MTE et SDTE moyenne et ectype de la prevision probabiliste normale
+N<-length(X)
+NR<-5000
+# 5000 répetitions par défaut du tirage a priori dans une Polya
+#TTP<-matrix(NA,6,2)
+GXp<-pnorm(X,MTE,SDTE)
+ttpit<-cvm.test(GXp,"punif")
+cvm<-ttpit[[1]]
+p.cvm<- ttpit[[2]]        
+# test classique de Cramer Von Mises : estimation et (p-value).
+Hpit<-hist(GXp,seq(0,1,1/K),plot=FALSE)
+chit<-sum(((Hpit[[2]]-N/K)^2)/(N/K))
+p.chit<-1-pchisq(chit,K-1)
+# test du CHI2 sur la classification PIT (10 classes) avec la p-value correspondante.
+Pdiri<-bmixture::rdirichlet(NR, alpha =rep((N+1)/K,K) )
+Mnom<-matrix(NA,NR,K)
+for(j in 1:NR){
+ Mnom[j,]<-rmultinom(1,N,Pdiri[j,]) 
+}
+  Postpit<-apply(((Mnom-N/K)^2)/(N/K),1,"sum")#TTP[3,]<- c(chit,length(which(Postpit>=chit))/NR)
+  bayescredib<- length(which(Postpit>=chit))/NR
+#Credibilité a posteriori du  CHI2, obtenue par simulation (Polya), à partir d'un prior uniforme sur les 10 classes (5000 répetitions par défaut)
+#--------
+LpX0n<-sum((dnorm(X,mean(X),sd(X), log=T)))/log(10)
+LpXn<-sum((dnorm(X,MTE,SDTE, log=T)))/log(10)
+ 
+   liste= (list(chit=chit,p.chit=1-pchisq(chit,9), p.credib=bayescredib,
+           LpXn=LpXn,LpX0n=LpX0n, cvm=cvm, p.cvm= p.cvm ))
+   liste = map_dbl(liste,round,digits=3)
+  return(liste)
+
+} 
+
+#-------  fin de fittest et début de fitvalid  -----------
+# a compléter !!!!!!
+fitvalid<-function(X=rnorm(100),mpred=rep(0,100), sdpred=rep(1,100), K=20, N0=3) {
+brk0<-qnorm((1:K-1)/K,mean(X),sd(X))
+brke<-c(max(min(X),brk0[1]),brk0[2:K],max(X))
+#K=length(brke)-1
+W=c(rep(1,K-1),5)
+WM<-max(W)
+N<-length(X)
+Gpred<-pnorm(X,mpred,sdpred)
+crps<-scoringRules::crps_norm(X,location = mpred, scale = sdpred)
+Mcrps<-mean(crps) 
+CVcrps=sd(crps)/Mcrps
+#score propre CRPS continu classique (from scoringRules pkg)
+Mlogs<-mean(scoringRules::logs_norm(X,location = mpred, scale = sdpred))
+# score IGNorance ou LOGarithmique (from scoringRules pkg)
+Y<-Ppred<-matrix(NA,N,K)
+BRJ<-BRWJ<-PR0J<-BWoptJ<-BpJ<-rep(NA,N)
+tbb<-c(qnorm(seq(1/K,(1-1/K),1/K),0,1))
+for(j in 1:N){
+  HG<-hist(Gpred[j],seq(0,1,1/K),plot=FALSE)
+  Y[j,]<-HG[[2]]
+  Ppred[j,]<-c(pnorm(tbb,mpred[j],sdpred[j])-pnorm(tbb,mpred[j],
+                                                   sdpred[j]),1-pnorm(tbb[K-1],mpred[j],sdpred[j]))
+BRJ[j]<-sum((Ppred[j,]-Y[j,])^2) 
+BRWJ[j]<-sum(W*(Ppred[j,]-Y[j,])^2)
+#Score de Brier sur K classes (formule PIT) symétrique et dissymetrique. La deuxieme prend en compte un coût W de pondérations Wi (i=1:10) qui transforme le score en regret (opportunity loss -au sens de Savage). Le cas traité par défaut (Wi=1 sauf W10=5) est équivalent à un cas de prévision binaire (voir Degroot et Fienberg) où l'évènement dommageable est la valeur de cible supérieure au quantile historique de prob. 0.90. 
+PR0J[j]<-sum(Ppred[j,which(W>1)])
+BWoptJ[j]<-WM*PR0J[j]*(1-PR0J[j])/(1-PR0J[j]+WM*PR0J[j])
+BpJ[j]<-PR0J[j]*(1-PR0J[j])*(PR0J[j]+WM*(1-PR0J[j]))
+#Dans ce dernier cas l'utilisateur de la prévision donnée par le prévisionniste, et qui subit ce dommage, peut utiliser une décision probabiliste optimale minimisant ce coût terminal. BWoptJ est le regret minimal et BpJ le regret, plus élevé résultant de l'utilisation de la probabilité du prévisionniste.
+}
+corr<-cor(X,mpred)
+#et non? {corr=sqrt(mean(sdpred^2+(X-mpred)^2))/sd(X)}
+Rrat<-1-corr^2
+
+liste= list(ScoreCRPS=Mcrps,
+                  ScoreIgnorance= Mlogs,
+                  BrierSym=mean(BRJ),
+                  BrierW=mean(BRWJ),
+                  RegretMin=mean(BWoptJ),
+                  Regret=mean(BpJ),
+                  corr=corr,
+                  ResidVar = 1- corr^2,
+                  CVScoreCRPS=CVcrps)
+liste = map_dbl(liste,round,digits=3)
+return(liste)
+}
+```
+
+On produit ensuite les tableaux d'analyse de résultats de façon SYSTEMATIQUE et propre. (grâce à la fonction map de purrr!)
+
+```{r test functions}
+
+d_grouped2 %>% 
+      mutate(
+      chi2tout= purrr::map(data,
+                           ~{fittest(X=as.numeric(scale(.x$y)),MTE=.x$MTE,SDTE=.x$STDE)}),
+      Chi2=purrr::map_dbl(chi2tout,1),
+      p.Chi2=purrr::map_dbl(chi2tout,2),
+      BayesKi=purrr::map_dbl(chi2tout,3),
+      CramVM =purrr::map_dbl(chi2tout,6),
+      p.Cram =purrr::map_dbl(chi2tout,7),
+      LogLik=purrr::map_dbl(chi2tout,4),
+      LogBF=purrr::map_dbl(chi2tout,5)
+      ) %>% 
+      dplyr::select(-chi2tout,-data) %>% 
+   knitr::kable(format="simple")
+
+d_grouped2 %>% 
+      mutate(fitvalidtout=purrr::map(
+            data, ~{ fitvalid(X=as.numeric(scale(.x$y)),.x$MTE,.x$STDE) }
+         ),
+         CRPS = purrr::map_dbl(fitvalidtout,1),
+         IGN = purrr::map_dbl(fitvalidtout,2),
+         BrierSym = purrr::map_dbl(fitvalidtout,3),
+         BrierW = purrr::map_dbl(fitvalidtout,4),
+         RegretMin = purrr::map_dbl(fitvalidtout,5),
+         Regret = purrr::map_dbl(fitvalidtout,6),
+         corr = purrr::map_dbl(fitvalidtout,7),
+         ResidVar = purrr::map_dbl(fitvalidtout,8)
+      ) %>% 
+      dplyr::select(-fitvalidtout,-data) %>% 
+     # dplyr::select(CRPS,IGN,BrierSym, BrierW,RegretMin,Regret,corr,ResidVar) %>% 
+      knitr::kable()
+
+```
+
+# Conclusions
+Voilà où j'en suis. Il subsiste encore plein de matière dans ton document "Previtemp-2021---Vouglans  VAR.Rmd" que je n'ai pas exploité complétement: notamment reste à visualiser les PITs, mais je souhaiterai les faire également de façon systématique.
+A ajouter ensuite les résultats sur CEP sur EMOS et BMA et ton travail sur le bootstrap.
+Mais les premiers tableaux d'analyse produits me laissent encore inquiet , pas sur le plan conceptuel, mais au vu de l'application. 
+
