@@ -1,7 +1,7 @@
 ---
 title: 'MainPrevitemp avancement Eric'
 author: "Éric Parent pour  Jacques Bernier"
-date: "15/3/2021"
+date: "15/4/2021"
 output:
   html_notebook
 ---
@@ -51,6 +51,8 @@ load("Ain@Vouglans.Rdata")
 #load("Buech@Chambons.Rdata")
 #load("Drac@Sautet.Rdata")
 horizon=4
+ete=100:300
+source("functionsFit.R")
 ```
 
 # Analyses de la climatologie
@@ -84,7 +86,7 @@ fig_variation_sdt<-dhisto %>% group_by(Year) %>% summarise(T=sd(T)) %>% ggplot()
   labs(y="Temperature Annual Standard Deviation")
 fig_Clim_Change
 fig_variation_sdt
-rm(list=c("fig_clim","fig_ChangeClim","ChangementClim"))
+#rm(list=c("fig_clim","fig_ChangeClim","ChangementClim"))
 
 ```
 
@@ -103,7 +105,7 @@ base<-function(t){
         sin(2*pi*2*t/365),cos(2*pi*2*t/365),
         sin(2*pi*3*t/365),cos(2*pi*3*t/365),
         sin(2*pi*4*t/365),cos(2*pi*4*t/365))}
-modlin<-lm(T~ 1+base(Calendaire)+Year, data=histo_ref)
+modlin<-lm(T~ 1+base(Calendaire), data=histo_ref) #+Year, data=histo_ref)
 histo_ref<-histo_ref %>% mutate(T_ref_lis=modlin$fitted.values,T_ecart=T-T_ref_lis) 
 # ---Calcul moyennes et ecart-types calendaires
 histo_ref %>% group_by(Calendaire) %>% summarise(MTecal=mean(T_ecart),SDTecal=sd(T_ecart)) -> Tecal
@@ -123,7 +125,7 @@ dg4 <- ggplot(data=btcaf, mapping=aes(x=lag, y=acf))+labs(title = "Daily Autocor
 
 histo_ref %>% ggplot(aes(x = 1:N, y= T_ecart)) + geom_point(shape='.')+labs(x='Days', y='Deviations', title="Daily deviations time series") -> dg1
 
-histo_ref %>% mutate(Saison=ifelse(Month %in% c(4:10), 1,0)) %>% dplyr::group_by(Saison) %>% mutate(SaisonSDT=sd(T_ecart),SaisonMT=mean(T_ecart)) %>% dplyr::ungroup() %>% as.data.frame() %>% dplyr::group_by(Calendaire) %>% dplyr::summarize( SDTecal=sd(T_ecart), MTecal=mean(T_ecart), SaisonSDT=mean(SaisonSDT),SaisonMT=mean(SaisonMT)  )->Tecaldf
+histo_ref %>% mutate(Saison=ifelse(Calendaire %in% ete, 1,0)) %>% dplyr::group_by(Saison) %>% mutate(SaisonSDT=sd(T_ecart),SaisonMT=mean(T_ecart)) %>% dplyr::ungroup() %>% as.data.frame() %>% dplyr::group_by(Calendaire) %>% dplyr::summarize( SDTecal=sd(T_ecart), MTecal=mean(T_ecart), SaisonSDT=mean(SaisonSDT),SaisonMT=mean(SaisonMT)  )->Tecaldf
 
 Tecaldf %>% ggplot(aes(x = Calendaire, y= MTecal)) + geom_point()+geom_line()+geom_line(aes(x = Calendaire, y= SaisonMT), color='red', size=1)+labs(x='Calendar days', y='Mean Deviations ', title="Interannual Means for deviations ") -> dg2
 Tecaldf %>% ggplot(aes(x = Calendaire, y= SDTecal)) + geom_point()+geom_line()+geom_line(aes(x = Calendaire, y= SaisonSDT), color='red', size=2)+labs(x='Calendar days', y='Standard Deviations', title="Interannual Sd of Temperature") -> dg3
@@ -142,6 +144,8 @@ On notera la forte autocorrélation journalière ainsi que la variation calendai
 
 
 # Etude marginale des membres de l'ensemble
+
+On utilise la desaisonnalisation sans la prise en compte du changement climatique.
 ```{r}
 YX<-left_join(dtout , histo_ref) %>% 
   dplyr::select(-Qobs,-PS)  %>% 
@@ -161,22 +165,32 @@ fig_illustration
 
 regul <- function(x) (x - YX$T_ref_lis)
 YX %>%  mutate_at(vars(matches("Run")),regul) %>% 
-  mutate_at(c("T","Xbar"),regul) %>% filter(Echeance==4) %>% 
+  mutate_at(c("T","Xbar"),regul) %>% filter(Echeance==horizon) %>% 
 dplyr::select(T,Xbar,starts_with("Run")) %>%
   cor()->cc
 mean(cc[2,-(1:2)])
-rm(list=c("dhisto","dtout","cc","histo_ref"))
+#rm(list=c("dhisto","dtout","cc","histo_ref"))
 
 ```
 ## Création de la base de données de travail apprentissage et validation
 
-On stationnarise TOUTES les variables du tibble YX pour créer les grandeurs sur lesquelles travailler dans  le tibble d
+On stationnarise TOUTES les variables du tibble YX pour créer les grandeurs centrées sur lesquelles travailler dans  le tibble d. 
+
+2010-2015 constituent le jeu test, les années antérieures à 2010 le fichier d'apprentissage.
 
 ```{r}
-ete<-c(5:11)
-d<-YX %>%  mutate_at(vars(matches("Run")),regul)  %>% filter(Echeance==horizon, Month %in% ete) %>% #dplyr::select(!starts_with("Run"),-Echeance) %>%
+
+d<-YX %>%  mutate_at(vars(matches("Run")),regul)  %>% filter(Echeance==horizon, Calendaire %in% ete) %>% #dplyr::select(!starts_with("Run"),-Echeance) %>%
   mutate(y=T_ecart, x=Xbar-T_ref_lis, v2=V2, jeu=ifelse(Year<2010, yes="apprentissage",no="test")) %>% dplyr::select(-T,-T_ecart,-Xbar,-V2) %>% dplyr::select(-Echeance) %>% relocate(starts_with("Run"),.after = "jeu")
 head(d)
+
+# Un dessin illustratif du biais et de la sous-dispersion
+
+d %>% dplyr::select(Date,y,x,v2,T_ref_lis) %>% filter(Date<"2005-04-30") %>% 
+  mutate(ymin=T_ref_lis+x-2*sqrt(v2),ymax=T_ref_lis+x+2*sqrt(v2)) %>% 
+  ggplot(aes(x=Date))+geom_line(aes(y=x+T_ref_lis))+geom_point(aes(y=y+T_ref_lis), size=2, col="red")+
+  geom_ribbon(mapping = aes(ymin=ymin,ymax=ymax), alpha=0.3, fill="lightblue")+
+  labs( y="Temperature")+theme(legend.position=NULL) 
 ```
 
 
@@ -221,7 +235,7 @@ dgd<-ACPfirst %>% #filter(qui<10) %>%
 
 fig_acp<-grid.arrange(dga,dgb,dgc,dgd)
 fig_acp
-rm(list=c("dga","dgb","dgc","dgd","Eas","ACP","ACPfirst","MeanY","StdY"))
+#rm(list=c("dga","dgb","dgc","dgd","Eas","ACP","ACPfirst","MeanY","StdY"))
 
 ```
 
@@ -230,7 +244,7 @@ La première figure représente l'inertie des 10 premiers facteurs rangés par o
 Les figures suivantes donnent, pour la seconde, le poids de chacun des 50 membres dans l'expression de cette composante très dominante. Il est clair que ces poids sont très sensiblement égaux ce qui signifie que cette composante est très proche de la moyenne d'ensemble Xbar. Les dernières figures montrent que les moyennes marginales de chaque membre sont assez semblables (quoique biaisées négativement par rapport à la variable cible)  de même que les écart-types (quoique sous estimés par rapport à la variabilité naturelle de la cible); cette symétrie entre les premières caractéristiques statistiques des membres va dans le sens de l'acceptabilité de l'hypothèse d'échangeabilité pour le modèle d'ensemble.
 
 
-## Post-traitement EMOS échangeable
+# Post-traitement EMOS échangeable
 
 Réalisons le calage du modèle EMOS échangeable
 
@@ -314,7 +328,7 @@ rm(list=c("out","out123", "means123","modelEMOS","STAT","n.burn","n.iter","n.thi
 
 On trouve que $a,b,c,d$ sont estimés plutôt précisément et on négligera leur variabilité par la suite. La contribution de la variance des membres à la variance prédictive est drôlemebnt faible (cf coefficient $d \approx 0.05$!)
 
-## Calage de la loi marginale de x
+# Calage de la loi marginale de x
 
 ```{r}
 calage<-d %>% filter(jeu=="apprentissage")%>% dplyr::select(-jeu)
@@ -404,7 +418,7 @@ On vérifie le bon ajustement Student et Fisher sur les statistiques de la loi m
 ```{r examMarginaleX, message=FALSE, warning=FALSE}
 k= as.numeric(sqrt((beta_hat^2+(lambda_hat^2)/S)/(lambda_hat^2)))
 g1<-calage %>% mutate(Student=(x-alpha_hat)/k/sqrt(v2)) %>% ggplot(aes(x=Student))+geom_histogram(aes(y =..density..),colour = "black", fill = "white") +
-stat_function(fun = dt, args = list(df =S-1),col="red",lwd=2)+ labs(x='Studentized Temperature ensemble', y='Empirical Density')+xlim(-4,4)
+stat_function(fun = dt, args = list(df =S-1),col="red",lwd=2)+ labs(x='Studentized ensemble Temperature', y='Empirical Density')+xlim(-4,4)
 
 g2<-calage %>% mutate(Fisher=(g_hat)*(v2)/lambda_hat^2) %>% ggplot(aes(x=Fisher))+geom_histogram(aes(y =..density..),colour = "black", fill = "white") +
 stat_function(fun = df, args = list(df1 =S-1, df2=2*g_hat),col="red",lwd=2)+ labs(x='Fisher-transformed variance of the ensemble', y='Empirical Density')+xlim(0,7)
@@ -413,9 +427,158 @@ fig_check_margex
 rm(list=c("g1","g2"))
 ```
 
+## Deviations au theoreme de Laplace Gauss
+
+```{r}
+(
+  g1<-calage %>% ggplot(aes(x=sqrt(v2),y=x))+
+  geom_point()+
+  geom_line(aes(y=alpha_hat+qt(0.1,df=S-1)*k*sqrt(v2)))+
+  geom_line(aes(y=alpha_hat+qt(0.9,df=S-1)*k*sqrt(v2)))+
+  labs(x="Standard déviations of the ensemble ", y="Means of the ensemble", title = "A : Covariation (mean & sd)")
+)
+
+calage %>% 
+  mutate(dessus=x-alpha_hat > qt(0.9,df=S-1)*k*sqrt(v2))  %>% 
+  mutate(dessous=x-alpha_hat < qt(0.1,df=S-1)*k*sqrt(v2))%>% 
+           summarize(dessus=sum(dessus),
+                     dessous=sum(dessous))
+
+Student=calage %>% transmute(Student=(x-alpha_hat)/k/sqrt(v2)) %>% pull(Student)
+(g2<-dessinePIT(Y=qnorm(pt(Student,df=S-1)),
+           mean=0, sd=1, K=20)+labs(x="Twenty classes of equal probability ", y="Observed frequencies", title = "B : PIT Studentized mean"))
+
+(dessinePIT(Y=qnorm(pt(Student[seq(1,length(Student),by=3)],df=S-1)),
+           mean=0, sd=1, K=20)+labs(x="Twenty classes of equal probability ", y="Observed frequencies", title = "PIT for the Studentized mean of the ensemble (learning sample)"))
+fig_check_cov <- grid.arrange(g1,g2,nrow=1)
+fig_check_cov
+rm(list=c("g1","g2"))
+```
+
+```{r}
+Studentbis=calage %>% transmute(Studentbis=(x-alpha_hat)*
+          sqrt(S*g_hat/(S*beta_hat^2+lambda_hat^2))) %>% pull(Studentbis)
+(dessinePIT(Y=qnorm(pt(Studentbis[seq(1,length(Studentbis),by=1)],df=2*g_hat)),
+           mean=0, sd=1, K=20)+labs(x="Twenty classes of equal probability ", y="Observed frequencies", title = "PIT for the Studentized mean of the ensemble (learning sample)"))
+
+```
+## Etude de la marginale Studentizée En Validation
+
+On regarde la Studentization de la marginale sur le fichier validation
+
+```{r}
+validation<-d %>% filter(jeu=="test") %>% dplyr::select(-jeu)
+(
+  g1<-validation %>% ggplot(aes(x=sqrt(v2),y=x))+
+  geom_point()+
+  geom_line(aes(y=alpha_hat+qt(0.1,df=S-1)*k*sqrt(v2)))+
+  geom_line(aes(y=alpha_hat+qt(0.9,df=S-1)*k*sqrt(v2)))+
+  labs(x="Standard déviations of the ensemble ", y="Means of the ensemble", title = "A : Covariation (mean & sd)")
+)
+
+validation %>% 
+  mutate(dessus=x-alpha_hat > qt(0.9,df=S-1)*k*sqrt(v2))  %>% 
+  mutate(dessous=x-alpha_hat < qt(0.1,df=S-1)*k*sqrt(v2))%>% 
+           summarize(dessus=sum(dessus),
+                     dessous=sum(dessous))
+
+Student=validation %>% transmute(Student=(x-alpha_hat)/k/sqrt(v2)) %>% pull(Student)
+(g2<-dessinePIT(Y=qnorm(pt(Student,df=S-1)),
+           mean=0, sd=1, K=20)+labs(x="Twenty classes of equal probability ", y="Observed frequencies", title = "B : PIT Studentized mean"))
+
+(dessinePIT(Y=qnorm(pt(Student[seq(1,length(Student),by=3)],df=S-1)),
+           mean=0, sd=1, K=20)+labs(x="Twenty classes of equal probability ", y="Observed frequencies", title = "PIT for the Studentized mean of the ensemble (learning sample)"))
+fig_check_cov_TEST <- grid.arrange(g1,g2,nrow=1)
+fig_check_cov_TEST
+rm(list=c("g1","g2"))
+```
+
+## Recalage de la loi marginale de x sur toute la base de données
+
+Du coup, on prend (un extrait de) toute la base pour mener l'inférence de $\alpha,\beta,\lambda, g$
+
+```{r}
+djags<- d %>% dplyr::select(x,v2) %>% sample_frac( 0.5)
+S=50
+#---------------------
+model2pivots <- "
+model{
+demiddl<- (S-1)/2
+# priors vagues
+alpha ~ dunif(-5,5)
+beta ~ dunif(0.01,20)
+lambda ~ dgamma(0.01,0.01)
+g ~ dgamma(0.1,0.1)
+# latentes
+for (t in 1:N) {Z2[t]~ dgamma(g,1)
+                Z1[t] ~ dnorm(0,Z2[t]) #la precision est Z2
+                
+# Observations
+                moy[t]<-alpha+beta*Z1[t]
+                preci[t]<-Z2[t]*S/lambda/lambda
+                xbar[t] ~ dnorm(moy[t],preci[t]) 
+                b[t]<-demiddl/lambda/lambda*Z2[t]
+                v2[t] ~ dgamma(demiddl,b[t])
+                }
+}
+"
+bugsdata<-list(xbar=djags$x,
+             v2=djags$v2,
+             N=length(djags$v2),
+             S=S)
+n.chains<-3
+n.iter<-5000*10
+n.burn<-5000*2
+n.thin<- 10
+
+inits1<-list(alpha=.1,beta=6,lambda=1, g=2)
+inits2<-list(alpha=-.1,beta=5,lambda=1.1, g=3)
+inits3<-list(alpha=.1,beta=4,lambda= 1.2, g=2)
+
+if(!file.exists("outxcomplet.RData")) {
+modele <- jags.model(file=textConnection(model2pivots), data=bugsdata, 
+                    inits=list(inits1, inits2,inits3),
+                     n.chains=n.chains, quiet=FALSE)
+update(modele, n.iter=n.burn)
+
+variable.names=c("alpha","beta","lambda","g")
+out <- coda.samples(model=modele,                                       variable.names=variable.names, 
+                    n.iter=n.iter,thin=n.thin)
+save(out,file = "outxcomplet.RData")
+                                }
+load("outxcomplet.RData")
+STAT<-summary(out)
+```
+
+On peut regarder la dispersion de ces évaluations bayésiennes des paramètres de la marginale de $X$
+```{r}
+gelman.plot(out)
+out123<-rbind(purrr::pluck(out,1),
+              purrr::pluck(out,2),
+              purrr::pluck(out,3))%>% 
+  as.data.frame()
+out123 %>%   
+  gather(param, value) %>% 
+  ggplot(aes_string(x="value")) +
+  geom_density(alpha=0.5,fill='blue') +
+  facet_wrap(param~., scales = "free")
+
+means123<-apply(out123,2,mean)
+alpha_hat=means123[1]
+beta_hat=means123[2]
+g_hat=means123[3]
+lambda_hat=means123[4]
+
+ggpairs(out123)
+#knitr::kable(STAT$statistics, format="latex", digits=2)
+
+#ggmcmc::ggs_pairs(ggmcmc::ggs(out))
+
+rm(list=c("out","out123", "means123","model2pivots","STAT","n.burn","n.iter","n.thin", "n.chains"))
+```
 
 
-## BFS predictif via jags
+#BFS predictif via jags
 
 ### Calculs formels
 
@@ -465,7 +628,7 @@ r'= r+\frac{S-1}{2}\frac{V^2}{\lambda^2}+
 
 ### Calculs Jags et autres pour inférer les coefficients de $Y|Z$
 
-On peut utiliser Jags pour estimer $\mu$, $\theta$ et $h$ en disant que la marge $X$ et ses coefficients sont connus.
+On peut utiliser Jags pour estimer $\mu$, $\theta$ et $h$ en imposant que la marge $X$ et ses coefficients sont connus.
 ```{r}
 modelpredictif2pivots <- "
 model{
@@ -691,7 +854,21 @@ filter(as.numeric(rownames(calage)) %in% sample(x=1:(length(calage$y)),size = 50
   geom_abline(aes(intercept=0, slope=1)) +geom_point(shape=19, color="red") +
   labs(x="Target y (centered & rescaled)", y="Prediction with 95% confidence band")
 
+other <-calage %>% mutate(Z1=ll$Z1,Z2=ll$Z2) %>% 
+  mutate(ypred= mu_hat+theta_hat*Z1,   
+            spred= (h_hat*Z2)^-0.5,
+         y=as.numeric(scale(y)),
+         ypred_EMOS= a_hat+b_hat*x,
+         spred_EMOS= (c_hat+d_hat*v2)^0.5) %>% 
+  dplyr::select(y,ypred, spred,ypred_EMOS,spred_EMOS) %>% 
+filter(as.numeric(rownames(calage)) %in% sample(x=1:(length(calage$y)),size = 50, replace = F) )
 
+other %>% ggplot(aes(x=y))+
+  geom_segment(aes(x=y,xend=y, y= ypred-2*spred, yend=ypred+2*spred), color="red")+
+  geom_abline(aes(intercept=0, slope=1)) +geom_point(aes(y=ypred),shape=19, color="red") +
+  geom_segment(aes(x=y+0.02,xend=y+0.02, y= ypred_EMOS-2*spred_EMOS, yend=ypred_EMOS+2*spred_EMOS), color="blue")+
+  geom_abline(aes(intercept=0, slope=1)) +geom_point(aes(x=y+0.02,y=ypred_EMOS),shape=19, color="blue") +
+  labs(x="Target y (centered & rescaled)", y="Prediction with 95% confidence band",title="95% predictive intervals for EMOS (blue and jittered) and BFS (red)")
 
 rm(list=c("out","out123", "means123y","modelpredictif2pivots","modelpredictif2pivotsBis","STAT","n.burn",
           "n.iter","n.thin", "n.chains","inits1","inits2","inits3","ll","bugsdata"))
@@ -731,9 +908,12 @@ b_bma=res$par[2]
 sigma_bma=res$par[3]
 ```
 On utilise la fonction optim pour trouver
-$\hat{a}_{BMA},\hat{b}_{BMA},\hat{\sigma}_{BMA}$ sur l'échantillon de calage où les membres ont été désaisonnalisés et stationnarisés. Ils valent respectivement `r c(a_bma,b_bma, sigma_bma)` . On remarque que
+$\hat{a}_{BMA},\hat{b}_{BMA},\hat{\sigma}_{BMA}$ sur l'échantillon de calage où les membres ont été désaisonnalisés et stationnarisés. Ils valent respectivement `r c(a_bma,b_bma, sigma_bma)` . On remarque que la transformation affine des membres pour le BMA est numériquement très proche de celle d'EMOS. 
 
-## Validation
+
+
+
+
 
 On écrit une fonction de prédiction du BFS à 2 pivots, une pour EMOS et une pour le BMA (la simple regression de y sur xbar est un EMOS particulier privé de terme variable pour la variance).
 
@@ -792,6 +972,46 @@ d_grouped2 <- rbind(vkrz,vreg,vemos,vbma) %>% as_tibble() %>%
 ```
 
 On dispose donc dans le tibble d_grouped2 de donnees et de loi prédictive moyenne MTE et ecart type STDE pour chaque année et chaque méthode (regression brute, EMOSE, BMA ou bien notre méthode KRZ à 2 pivots). Ces méthodes pourront être enrichies par la suite par d'autres techniques de post-traitement.
+On étudie le juste comportement en répartition 
+```{r}
+d_grouped2 %>% 
+      mutate(
+      chi2tout= purrr::map(data,
+                           ~{FITtestS(GXp=pnorm((as.numeric(scale(.x$y))-.x$MTE)/.x$STDE), K=20)}),
+      Chi2=purrr::map_dbl(chi2tout,3),
+      CredBayesChi2=purrr::map_dbl(chi2tout,4),
+      CramVM =purrr::map_dbl(chi2tout,1),
+      p.Cram =purrr::map_dbl(chi2tout,2)
+      ) %>% 
+      dplyr::select(-chi2tout,-data) %>% 
+   knitr::kable(format="simple")
+
+```
+ 
+ Et en performance
+ 
+ 
+
+```{r}
+d_grouped2 %>% 
+      mutate(fitvalidtout=purrr::map(
+            data, ~{ FITvalid(X=as.numeric(scale(.x$y)),.x$MTE,.x$STDE,0,1) }
+         ),
+         CRPS = purrr::map_dbl(fitvalidtout,1),
+         cvCRPS = purrr::map_dbl(fitvalidtout,2),
+         IGN = purrr::map_dbl(fitvalidtout,3),
+         Brier = purrr::map_dbl(fitvalidtout,4),
+         InterQ = purrr::map_dbl(fitvalidtout,5),
+         cvInterQ = purrr::map_dbl(fitvalidtout,6),
+         InterQcal = purrr::map_dbl(fitvalidtout,7),
+         Correl = purrr::map_dbl(fitvalidtout,8)
+      ) %>% 
+      dplyr::select(-fitvalidtout,-data) %>% 
+     # dplyr::select(CRPS,IGN,BrierSym, BrierW,RegretMin,Regret,corr,ResidVar) %>% 
+      knitr::kable()
+
+```
+
 
 ## Ré-écriture  des fonctions fittest et fitvalid
 
@@ -922,6 +1142,30 @@ d_grouped2 %>%
       dplyr::select(-fitvalidtout,-data) %>% 
      # dplyr::select(CRPS,IGN,BrierSym, BrierW,RegretMin,Regret,corr,ResidVar) %>% 
       knitr::kable()
+
+```
+
+# Outils
+
+Voici une fonction pour dessiner un Probability Integral Transform
+
+```{r}
+dessinePIT = function(Y=rnorm(100),mean=0, sd=1, K=20){
+  n=length(Y)
+  abet<-1/K + n/K
+  bbet<- (K-1)/K + (K-1) * n/K
+  lim_sup<-qbeta(0.95, abet,bbet)*n
+  lim_inf<-qbeta(0.05, abet,bbet)*n
+  comptages=graphics::hist((Y-mean)/sd,breaks = qnorm(seq(0,1,length.out=K+1)),
+                                            plot = FALSE)$counts
+  p<-tibble(freq=comptages,x=(1:K)/K) %>% ggplot(aes(x=x,y=freq))+
+    geom_bar(stat="identity", fill="blue")+
+    geom_hline(aes(yintercept=lim_sup), col="red")+
+    geom_hline(aes(yintercept=lim_inf), col="red")+
+    geom_hline(aes(yintercept=n/K))
+}
+p<-dessinePIT(K=10)
+p
 
 ```
 
