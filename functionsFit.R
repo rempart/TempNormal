@@ -61,7 +61,7 @@ FITvalid<-function(X=rnorm(300),mpred =0, sdpred=1,mcal=0,sdcal=1,K=20) {
   ITQc<-sd(X)*(qnorm(0.75,0,1)-qnorm(0.25,0,1)) # moyenne interquartile du calage
   crpsX<-scoringRules::crps_norm(X,location = mpred, scale = sdpred)
    
-  liste= list(ScoreCRPS=-mean(crpsX),
+  liste= list(ScoreCRPS= mean(crpsX),
               CVScoreCRPS=sd(crpsX)/mean(crpsX),
               ScoreIgnorance= mean(scoringRules::logs_norm(X,location = mpred, scale = sdpred)),
               BrierSym=BR,

@@ -247,6 +247,7 @@ Les figures suivantes donnent, pour la seconde, le poids de chacun des 50 membre
 # Post-traitement EMOS échangeable
 
 Réalisons le calage du modèle EMOS échangeable
+pour prédire la cible (non centrée ni réduite)
 
 $$y_t=a+b\times x_t +\sigma_t \varepsilon_t \\
   \sigma_t^2= c+d\times v_t^2\\
@@ -259,10 +260,10 @@ S=50
 modelEMOS <- "
 model{
 # priors vagues
-a ~ dunif(-5,5)
-b ~ dunif(-5,5)
-c ~ dunif(0,5)
-d ~ dunif(0,5)
+a ~ dunif(-25,25)
+b ~ dunif(-25,25)
+c ~ dunif(0,25)
+d ~ dunif(0,25)
 
 # Observations
 for (t in 1:N) { moy[t]<-a+b*xbar[t]
@@ -275,7 +276,7 @@ for (t in 1:N) { moy[t]<-a+b*xbar[t]
 bugsdata<-list(xbar=calage$x,
              v2=calage$v2,
              N=length(calage$v2),
-             y=as.numeric(scale(calage$y)))
+             y=calage$y)
 n.chains<-3
 n.iter<-5000*10
 n.burn<-5000*2
@@ -498,7 +499,8 @@ rm(list=c("g1","g2"))
 Du coup, on prend (un extrait de) toute la base pour mener l'inférence de $\alpha,\beta,\lambda, g$
 
 ```{r}
-djags<- d %>% dplyr::select(x,v2) %>% sample_frac( 0.5)
+#djags<- d %>% dplyr::select(x,v2) %>% sample_frac( 0.5)
+djags<- d[seq(1,length(d$x),by=2),] %>% dplyr::select(x,v2)
 S=50
 #---------------------
 model2pivots <- "
@@ -634,7 +636,7 @@ modelpredictif2pivots <- "
 model{
 demiddl<- (S-1)/2
 # priors vagues
-mu ~ dunif(-10,10)
+mu ~ dunif(-50,50)
 theta ~dunif(-40,40)
 h ~ dgamma(0.01,0.01)
 
@@ -668,7 +670,7 @@ bugsdata<-list(xbar=calage$x,
              g=g_hat,
              lambda=lambda_hat,
              #y= calage$y)
-             y=(calage$y-mean(calage$y))/sd(calage$y))
+             y=calage$y)
 n.chains<-3
 n.iter<-5000*10
 n.burn<-5000*2
@@ -721,8 +723,8 @@ Les résultats appelés h_hat_XY,  mu_hat_XY, theta_hat_XY ne sont guère diffé
 ```{r}
 InferParEM= function(alpha=alpha_hat, beta=beta_hat,lambda=lambda_hat,g=g_hat,
                      u= calage$x,
-                     v=(calage$y-mean(calage$y)) / sd(calage$y),
-                     #v=calage$y,
+                     #v=(calage$y-mean(calage$y)) / sd(calage$y),
+                     v=calage$y,
                      w=calage$v2){
 NRM<-1000 
 N=length(u)
@@ -753,16 +755,16 @@ mu_hat=ll$mu
 theta_hat=ll$theta
 mean(ll$spred)
 
-data.frame(y=(calage$y-mean(calage$y)) / sd(calage$y),
+data.frame(y=calage$y,
            ypred= ll$ypred) %>%
   ggplot(aes(x=y, y=ypred))+ geom_point()+geom_abline(intercept=0, slope=1)
 
 # means123y
-data.frame(y=(calage$y-mean(calage$y)) / sd(calage$y),
+data.frame(y=calage$y,
            ypred= mu_hat_XY+theta_hat_XY*ll$Z1) %>%
   ggplot(aes(x=y, y=ypred))+ geom_point()+geom_abline(intercept=0, slope=1)
 
-data.frame(y=(calage$y-mean(calage$y)) / sd(calage$y),
+data.frame(y=calage$y,
            Z1=ll$Z1, Z1theo= (calage$x-alpha_hat)*S*beta_hat/(S*beta_hat^2+lambda_hat^2)) %>%
   ggplot(aes(x=Z1, y=Z1theo))+ geom_point()+geom_abline(intercept=0, slope=1)
 
@@ -792,7 +794,7 @@ for (t in 1:N) {
 bugsdata<-list(Z1=ll$Z1,
                Z2=ll$Z2,
               N=length(ll$Z1),
-              y= (calage$y-mean(calage$y))/sd(calage$y)
+              y=calage$y
               )
              
 n.chains<-3
@@ -836,8 +838,8 @@ calage %>% mutate(Z1=ll$Z1,Z2=ll$Z2) %>%
             ypred_meanZ1= mu_bis+theta_bis*Z1) %>% 
   dplyr::select(y,ypred_jags,ypred_EM, ypred_meanZ1) %>%     
   gather(-y,key=methode,value = prediction) %>% 
-  ggplot(aes(x=as.numeric(scale(y)), y=prediction))+geom_point(aes(color=methode),size=0.5)+
-  geom_abline(slope=1,intercept=0)+facet_wrap(~methode)+labs(x="Cible y centrée réduite")
+  ggplot(aes(x=y, y=prediction))+geom_point(aes(color=methode),size=0.5)+
+  geom_abline(slope=1,intercept=0)+facet_wrap(~methode)+labs(x="Cible y ")
 
 ```
 
@@ -847,17 +849,17 @@ Enfin un dessin de 50 points de calage pris au hasard montrant l'ajustement avec
 calage %>% mutate(Z1=ll$Z1,Z2=ll$Z2) %>% 
   mutate(ypred= mu_hat+theta_hat*Z1,   
             spred= (h_hat*Z2)^-0.5,
-         y=as.numeric(scale(y))) %>% 
+         y=y) %>% 
   dplyr::select(y,ypred, spred) %>% 
 filter(as.numeric(rownames(calage)) %in% sample(x=1:(length(calage$y)),size = 50, replace = F) ) %>% ggplot(aes(x=y, y=ypred))+
   geom_segment(aes(x=y,xend=y, y= ypred-2*spred, yend=ypred+2*spred))+
   geom_abline(aes(intercept=0, slope=1)) +geom_point(shape=19, color="red") +
-  labs(x="Target y (centered & rescaled)", y="Prediction with 95% confidence band")
+  labs(x="Target y ", y="Prediction with 95% confidence band")
 
 other <-calage %>% mutate(Z1=ll$Z1,Z2=ll$Z2) %>% 
   mutate(ypred= mu_hat+theta_hat*Z1,   
             spred= (h_hat*Z2)^-0.5,
-         y=as.numeric(scale(y)),
+         y=y,
          ypred_EMOS= a_hat+b_hat*x,
          spred_EMOS= (c_hat+d_hat*v2)^0.5) %>% 
   dplyr::select(y,ypred, spred,ypred_EMOS,spred_EMOS) %>% 
@@ -866,9 +868,9 @@ filter(as.numeric(rownames(calage)) %in% sample(x=1:(length(calage$y)),size = 50
 other %>% ggplot(aes(x=y))+
   geom_segment(aes(x=y,xend=y, y= ypred-2*spred, yend=ypred+2*spred), color="red")+
   geom_abline(aes(intercept=0, slope=1)) +geom_point(aes(y=ypred),shape=19, color="red") +
-  geom_segment(aes(x=y+0.02,xend=y+0.02, y= ypred_EMOS-2*spred_EMOS, yend=ypred_EMOS+2*spred_EMOS), color="blue")+
-  geom_abline(aes(intercept=0, slope=1)) +geom_point(aes(x=y+0.02,y=ypred_EMOS),shape=19, color="blue") +
-  labs(x="Target y (centered & rescaled)", y="Prediction with 95% confidence band",title="95% predictive intervals for EMOS (blue and jittered) and BFS (red)")
+  geom_segment(aes(x=y+0.05,xend=y+0.05, y= ypred_EMOS-2*spred_EMOS, yend=ypred_EMOS+2*spred_EMOS), color="blue")+
+  geom_abline(aes(intercept=0, slope=1)) +geom_point(aes(x=y+0.05,y=ypred_EMOS),shape=19, color="blue") +
+  labs(x="Target y ", y="Prediction with 95% confidence band",title="95% predictive intervals for EMOS (blue and jittered) and BFS (red)")
 
 rm(list=c("out","out123", "means123y","modelpredictif2pivots","modelpredictif2pivotsBis","STAT","n.burn",
           "n.iter","n.thin", "n.chains","inits1","inits2","inits3","ll","bugsdata"))
@@ -893,7 +895,7 @@ BMAvrais<-function(y=rnorm(100),x=matrix(rnorm(300),nrow = 100),
 }
 x= calage %>% dplyr::select(starts_with("Run")) %>% as.matrix()
 x=x #-calage$T_ref_lis déjà fait dans d qui a donné calage
-y=as.numeric((calage$y-mean(calage$y))/sd(calage$y))
+y=calage$y
  
 fr<-function(u){
   a <- u[1]
@@ -959,7 +961,7 @@ CondYsachantX = previKRZ2pivot()
 
 
 
-lmbrut<-lm(y~x,data=calage %>% mutate(y=(y-mean(y))/sd(y)))
+lmbrut<-lm(y~x,data=calage )
 
 
 validation %>% mutate(Model="KrzBFS", MTE=CondYsachantX$meanKRZ, STDE= CondYsachantX$sdKRZ)->vkrz
@@ -968,7 +970,7 @@ validation %>% mutate(Model="EMOSE", MTE=a_hat + b_hat*x, STDE= (c_hat+d_hat*v2)
 validation %>% mutate(Model="BMA", MTE=a_bma + b_bma*x, STDE= (sigma_bma^2+b_bma*b_bma*(S-1)/S*v2)^0.5)->vbma
 
 d_grouped2 <- rbind(vkrz,vreg,vemos,vbma) %>% as_tibble() %>% 
-      group_by(Model) %>%  nest() 
+      group_by(Model,Year) %>%  nest() 
 ```
 
 On dispose donc dans le tibble d_grouped2 de donnees et de loi prédictive moyenne MTE et ecart type STDE pour chaque année et chaque méthode (regression brute, EMOSE, BMA ou bien notre méthode KRZ à 2 pivots). Ces méthodes pourront être enrichies par la suite par d'autres techniques de post-traitement.
@@ -977,13 +979,14 @@ On étudie le juste comportement en répartition
 d_grouped2 %>% 
       mutate(
       chi2tout= purrr::map(data,
-                           ~{FITtestS(GXp=pnorm((as.numeric(scale(.x$y))-.x$MTE)/.x$STDE), K=20)}),
+                           ~{FITtestS(GXp=pnorm((.x$y-.x$MTE)/.x$STDE), K=20)}),
       Chi2=purrr::map_dbl(chi2tout,3),
       CredBayesChi2=purrr::map_dbl(chi2tout,4),
       CramVM =purrr::map_dbl(chi2tout,1),
       p.Cram =purrr::map_dbl(chi2tout,2)
       ) %>% 
       dplyr::select(-chi2tout,-data) %>% 
+  filter(Model != "Regres") %>% 
    knitr::kable(format="simple")
 
 ```
@@ -995,7 +998,7 @@ d_grouped2 %>%
 ```{r}
 d_grouped2 %>% 
       mutate(fitvalidtout=purrr::map(
-            data, ~{ FITvalid(X=as.numeric(scale(.x$y)),.x$MTE,.x$STDE,0,1) }
+            data, ~{ FITvalid(X=.x$y,.x$MTE,.x$STDE,mean(calage$y),sd(calage$y)) }
          ),
          CRPS = purrr::map_dbl(fitvalidtout,1),
          cvCRPS = purrr::map_dbl(fitvalidtout,2),
@@ -1007,170 +1010,13 @@ d_grouped2 %>%
          Correl = purrr::map_dbl(fitvalidtout,8)
       ) %>% 
       dplyr::select(-fitvalidtout,-data) %>% 
-     # dplyr::select(CRPS,IGN,BrierSym, BrierW,RegretMin,Regret,corr,ResidVar) %>% 
+     filter(Model!="Regres")%>% 
       knitr::kable()
 
 ```
 
-
-## Ré-écriture  des fonctions fittest et fitvalid
-
-Ces fonctions n'en sont qu'à une version provisoire à retravailler. Il faut que leurs sorties soient sous forme de liste et non de tableaux. Ceci afin de permettre dans le chunk suivant d'être appelées par la fonction map (et ses diverses versions) du package purrr pour faire des tableaux récapitulatifs des performance en calibration et en finesse des techniques de posttraitement. (si on utilise ensuite kable, son argument format = "latex" en donne une impression récupérable directement pour coller sous overleaf)
-
-Pour diminuer l'effet des autocorrélations, Jacques propose que les statistiques et test soient calculés sur des sous-échantillons 1/N0 de valeurs de la variable traitée, appelée X en interne à la fonction. Il s'agit d'échantillons de "cibles de prevision" dont on veut tester la loi conditionnelle, à prédicteurs fixés. Pour les températures, ce sont  des lois normales. Ce sont ces sous échantillons, préalablement constitués qui sont introduits avec X....qui donc devrait s'appeler y dans nos notations.
-
-MTE et SDTE sont les moyennes et écart-types vectoriels, prédictifs calculés du vecteur X.
-N0 est la taille initiale de l'échantillon.
-
-```{r}
-fittest<-function(X=rnorm(100), MTE=rep(0,100), SDTE=rep(1,100) ,N0=3,K=20) {
-#X  observation, MTE et SDTE moyenne et ectype de la prevision probabiliste normale
-N<-length(X)
-NR<-5000
-# 5000 répetitions par défaut du tirage a priori dans une Polya
-#TTP<-matrix(NA,6,2)
-GXp<-pnorm(X,MTE,SDTE)
-ttpit<-cvm.test(GXp,"punif")
-cvm<-ttpit[[1]]
-p.cvm<- ttpit[[2]]        
-# test classique de Cramer Von Mises : estimation et (p-value).
-Hpit<-hist(GXp,seq(0,1,1/K),plot=FALSE)
-chit<-sum(((Hpit[[2]]-N/K)^2)/(N/K))
-p.chit<-1-pchisq(chit,K-1)
-# test du CHI2 sur la classification PIT (10 classes) avec la p-value correspondante.
-Pdiri<-bmixture::rdirichlet(NR, alpha =rep((N+1)/K,K) )
-Mnom<-matrix(NA,NR,K)
-for(j in 1:NR){
- Mnom[j,]<-rmultinom(1,N,Pdiri[j,]) 
-}
-  Postpit<-apply(((Mnom-N/K)^2)/(N/K),1,"sum")#TTP[3,]<- c(chit,length(which(Postpit>=chit))/NR)
-  bayescredib<- length(which(Postpit>=chit))/NR
-#Credibilité a posteriori du  CHI2, obtenue par simulation (Polya), à partir d'un prior uniforme sur les 10 classes (5000 répetitions par défaut)
-#--------
-LpX0n<-sum((dnorm(X,mean(X),sd(X), log=T)))/log(10)
-LpXn<-sum((dnorm(X,MTE,SDTE, log=T)))/log(10)
- 
-   liste= (list(chit=chit,p.chit=1-pchisq(chit,9), p.credib=bayescredib,
-           LpXn=LpXn,LpX0n=LpX0n, cvm=cvm, p.cvm= p.cvm ))
-   liste = map_dbl(liste,round,digits=3)
-  return(liste)
-
-} 
-
-#-------  fin de fittest et début de fitvalid  -----------
-# a compléter !!!!!!
-fitvalid<-function(X=rnorm(100),mpred=rep(0,100), sdpred=rep(1,100), K=20, N0=3) {
-brk0<-qnorm((1:K-1)/K,mean(X),sd(X))
-brke<-c(max(min(X),brk0[1]),brk0[2:K],max(X))
-#K=length(brke)-1
-W=c(rep(1,K-1),5)
-WM<-max(W)
-N<-length(X)
-Gpred<-pnorm(X,mpred,sdpred)
-crps<-scoringRules::crps_norm(X,location = mpred, scale = sdpred)
-Mcrps<-mean(crps) 
-CVcrps=sd(crps)/Mcrps
-#score propre CRPS continu classique (from scoringRules pkg)
-Mlogs<-mean(scoringRules::logs_norm(X,location = mpred, scale = sdpred))
-# score IGNorance ou LOGarithmique (from scoringRules pkg)
-Y<-Ppred<-matrix(NA,N,K)
-BRJ<-BRWJ<-PR0J<-BWoptJ<-BpJ<-rep(NA,N)
-tbb<-c(qnorm(seq(1/K,(1-1/K),1/K),0,1))
-for(j in 1:N){
-  HG<-hist(Gpred[j],seq(0,1,1/K),plot=FALSE)
-  Y[j,]<-HG[[2]]
-  Ppred[j,]<-c(pnorm(tbb,mpred[j],sdpred[j])-pnorm(tbb,mpred[j],
-                                                   sdpred[j]),1-pnorm(tbb[K-1],mpred[j],sdpred[j]))
-BRJ[j]<-sum((Ppred[j,]-Y[j,])^2) 
-BRWJ[j]<-sum(W*(Ppred[j,]-Y[j,])^2)
-#Score de Brier sur K classes (formule PIT) symétrique et dissymetrique. La deuxieme prend en compte un coût W de pondérations Wi (i=1:10) qui transforme le score en regret (opportunity loss -au sens de Savage). Le cas traité par défaut (Wi=1 sauf W10=5) est équivalent à un cas de prévision binaire (voir Degroot et Fienberg) où l'évènement dommageable est la valeur de cible supérieure au quantile historique de prob. 0.90. 
-PR0J[j]<-sum(Ppred[j,which(W>1)])
-BWoptJ[j]<-WM*PR0J[j]*(1-PR0J[j])/(1-PR0J[j]+WM*PR0J[j])
-BpJ[j]<-PR0J[j]*(1-PR0J[j])*(PR0J[j]+WM*(1-PR0J[j]))
-#Dans ce dernier cas l'utilisateur de la prévision donnée par le prévisionniste, et qui subit ce dommage, peut utiliser une décision probabiliste optimale minimisant ce coût terminal. BWoptJ est le regret minimal et BpJ le regret, plus élevé résultant de l'utilisation de la probabilité du prévisionniste.
-}
-corr<-cor(X,mpred)
-#et non? {corr=sqrt(mean(sdpred^2+(X-mpred)^2))/sd(X)}
-Rrat<-1-corr^2
-
-liste= list(ScoreCRPS=Mcrps,
-                  ScoreIgnorance= Mlogs,
-                  BrierSym=mean(BRJ),
-                  BrierW=mean(BRWJ),
-                  RegretMin=mean(BWoptJ),
-                  Regret=mean(BpJ),
-                  corr=corr,
-                  ResidVar = 1- corr^2,
-                  CVScoreCRPS=CVcrps)
-liste = map_dbl(liste,round,digits=3)
-return(liste)
-}
-```
-
-On produit ensuite les tableaux d'analyse de résultats de façon SYSTEMATIQUE et propre. (grâce à la fonction map de purrr!)
-
-```{r test functions}
-
-d_grouped2 %>% 
-      mutate(
-      chi2tout= purrr::map(data,
-                           ~{fittest(X=as.numeric(scale(.x$y)),MTE=.x$MTE,SDTE=.x$STDE)}),
-      Chi2=purrr::map_dbl(chi2tout,1),
-      p.Chi2=purrr::map_dbl(chi2tout,2),
-      BayesKi=purrr::map_dbl(chi2tout,3),
-      CramVM =purrr::map_dbl(chi2tout,6),
-      p.Cram =purrr::map_dbl(chi2tout,7),
-      LogLik=purrr::map_dbl(chi2tout,4),
-      LogBF=purrr::map_dbl(chi2tout,5)
-      ) %>% 
-      dplyr::select(-chi2tout,-data) %>% 
-   knitr::kable(format="simple")
-
-d_grouped2 %>% 
-      mutate(fitvalidtout=purrr::map(
-            data, ~{ fitvalid(X=as.numeric(scale(.x$y)),.x$MTE,.x$STDE) }
-         ),
-         CRPS = purrr::map_dbl(fitvalidtout,1),
-         IGN = purrr::map_dbl(fitvalidtout,2),
-         BrierSym = purrr::map_dbl(fitvalidtout,3),
-         BrierW = purrr::map_dbl(fitvalidtout,4),
-         RegretMin = purrr::map_dbl(fitvalidtout,5),
-         Regret = purrr::map_dbl(fitvalidtout,6),
-         corr = purrr::map_dbl(fitvalidtout,7),
-         ResidVar = purrr::map_dbl(fitvalidtout,8)
-      ) %>% 
-      dplyr::select(-fitvalidtout,-data) %>% 
-     # dplyr::select(CRPS,IGN,BrierSym, BrierW,RegretMin,Regret,corr,ResidVar) %>% 
-      knitr::kable()
-
-```
-
-# Outils
-
-Voici une fonction pour dessiner un Probability Integral Transform
-
-```{r}
-dessinePIT = function(Y=rnorm(100),mean=0, sd=1, K=20){
-  n=length(Y)
-  abet<-1/K + n/K
-  bbet<- (K-1)/K + (K-1) * n/K
-  lim_sup<-qbeta(0.95, abet,bbet)*n
-  lim_inf<-qbeta(0.05, abet,bbet)*n
-  comptages=graphics::hist((Y-mean)/sd,breaks = qnorm(seq(0,1,length.out=K+1)),
-                                            plot = FALSE)$counts
-  p<-tibble(freq=comptages,x=(1:K)/K) %>% ggplot(aes(x=x,y=freq))+
-    geom_bar(stat="identity", fill="blue")+
-    geom_hline(aes(yintercept=lim_sup), col="red")+
-    geom_hline(aes(yintercept=lim_inf), col="red")+
-    geom_hline(aes(yintercept=n/K))
-}
-p<-dessinePIT(K=10)
-p
-
-```
 
 # Conclusions
-Voilà où j'en suis. Il subsiste encore plein de matière dans ton document "Previtemp-2021---Vouglans  VAR.Rmd" que je n'ai pas exploité complétement: notamment reste à visualiser les PITs, mais je souhaiterai les faire également de façon systématique.
-A ajouter ensuite les résultats sur CEP sur EMOS et BMA et ton travail sur le bootstrap.
-Mais les premiers tableaux d'analyse produits me laissent encore inquiet , pas sur le plan conceptuel, mais au vu de l'application. 
+Voilà où j'en suis au 15 avril 2021. J'attend la nouvelle version de ton document "Previtemp-2021---Vouglans  VAR.Rmd" avec ton travail sur les fonctions de test et validation.
+Les tableaux d'analyse produits me laissent encore un inquiet , pas sur le plan conceptuel, mais au vu de l'application où il ne semble y avoir guère de différence entre les méthodes. Note qu'on peut pour chacune des méthodes calculer formellement moyenne et variance à chaque pas de temps et ca se ressemble beaucoup, en tout cas c'est vrai pour les espérances.
 
